@@ -1,8 +1,9 @@
 {
-  "name": "clean-node-server",
+  "name": "@ivan-pasco/clean-node-server",
   "version": "0.1.0",
   "description": "Node.js host bridge for Clean Language WASM modules",
   "main": "dist/index.js",
+  "types": "dist/index.d.ts",
   "bin": {
     "clean-node-server": "./dist/index.js"
   },
@@ -13,15 +14,33 @@
     "test": "vitest",
     "test:run": "vitest run",
     "lint": "eslint src --ext .ts",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "clean-language",
     "wasm",
     "webassembly",
-    "server"
+    "server",
+    "runtime"
   ],
+  "author": "Ivan Pasco",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ivan-Pasco/clean-node-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Ivan-Pasco/clean-node-server/issues"
+  },
+  "homepage": "https://github.com/Ivan-Pasco/clean-node-server#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "dependencies": {
     "express": "^4.18.2",
     "commander": "^12.0.0",
