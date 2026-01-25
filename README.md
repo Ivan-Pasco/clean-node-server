@@ -1,147 +1,152 @@
 # Clean Node Server
 
-Node.js host bridge for Clean Language WASM modules. This provides feature parity with `clean-server`, allowing Clean Language applications to run on Node.js.
+A Node.js runtime for Clean Language applications. Run your compiled Clean Language WebAssembly modules with full access to HTTP servers, databases, file systems, and more.
 
-## Installation
+## What is this?
+
+Clean Node Server lets you run Clean Language `.wasm` files on any machine with Node.js. It provides all the "bridge functions" your Clean code needs to interact with the outside world - things like:
+
+- Starting a web server and handling HTTP requests
+- Connecting to PostgreSQL or SQLite databases
+- Reading and writing files
+- Making HTTP requests to other services
+- User authentication with sessions and JWT tokens
+- And much more!
+
+## Quick Start
+
+### Installation
 
 ```bash
-npm install
-npm run build
+npm install -g @ivan-pasco/clean-node-server
 ```
 
-## Usage
+Or use it directly with npx:
 
 ```bash
-# Basic usage
-clean-node-server <wasm-file>
-
-# With options
-clean-node-server app.wasm --port 3000 --verbose
-
-# With database
-clean-node-server app.wasm --database "postgresql://user:pass@localhost/db"
-
-# Full options
-clean-node-server app.wasm \
-  --port 8080 \
-  --host 0.0.0.0 \
-  --database "sqlite:///data/app.db" \
-  --verbose \
-  --session-secret "your-secret-key" \
-  --jwt-secret "your-jwt-secret"
+npx @ivan-pasco/clean-node-server your-app.wasm
 ```
 
-## Options
+### Running Your First App
 
-| Option | Short | Default | Description |
-|--------|-------|---------|-------------|
-| `--port` | `-p` | 3000 | Port to listen on |
-| `--host` | `-h` | 0.0.0.0 | Host to bind to |
-| `--database` | `-d` | - | Database connection URL |
-| `--verbose` | `-v` | false | Enable verbose logging |
-| `--session-secret` | - | auto | Secret key for sessions |
-| `--jwt-secret` | - | auto | Secret key for JWT tokens |
-| `--sandbox` | - | wasm dir | Root directory for file operations |
+Once you've compiled your Clean Language code to WebAssembly:
 
-## Supported Database URLs
+```bash
+clean-node-server my-app.wasm
+```
 
-- **PostgreSQL**: `postgresql://user:pass@host:port/database`
-- **SQLite**: `sqlite:///path/to/database.db` or `sqlite::memory:`
+That's it! Your app is now running on http://localhost:3000
 
-## Bridge Functions
+### Common Options
 
-The following bridge functions are available to WASM modules:
+```bash
+# Run on a different port
+clean-node-server my-app.wasm --port 8080
 
-### Console
-- `print(ptr, len)` - Print string without newline
-- `printl(ptr, len)` - Print string with newline
-- `print_integer(value)` - Print integer
-- `print_float(value)` - Print float
-- `print_boolean(value)` - Print boolean
+# Connect to a database
+clean-node-server my-app.wasm --database "postgresql://user:pass@localhost/mydb"
 
-### Math
-All standard math functions: `sin`, `cos`, `tan`, `sqrt`, `pow`, `abs`, `floor`, `ceil`, `round`, `log`, `exp`, etc.
+# See what's happening under the hood
+clean-node-server my-app.wasm --verbose
+```
 
-### String
-- `string_concat`, `string_substring`, `string_trim`
-- `string_to_upper`, `string_to_lower`
-- `string_replace`, `string_split`, `string_index_of`
-- Type conversions: `int_to_string`, `float_to_string`, `string_to_int`, etc.
+## Documentation
 
-### HTTP Server
-- `_http_listen(port)` - Set listening port
-- `_http_route(method, path, handler)` - Register route
-- `_http_route_protected(...)` - Register protected route
-- `_http_set_status(code)` - Set response status
-- `_http_set_header(name, value)` - Set response header
-- `_http_json(body)` - Send JSON response
-- `_http_redirect(url, permanent)` - Redirect
-- Response helpers: `_http_not_found`, `_http_bad_request`, `_http_unauthorized`, etc.
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](docs/getting-started.md) | First steps with Clean Node Server |
+| [HTTP Server](docs/http-server.md) | Building web APIs and handling requests |
+| [Database](docs/database.md) | Working with PostgreSQL and SQLite |
+| [Authentication](docs/authentication.md) | Sessions, passwords, and JWT tokens |
+| [File System](docs/files.md) | Reading and writing files |
+| [HTTP Client](docs/http-client.md) | Making requests to external services |
+| [All Functions](docs/functions-reference.md) | Complete reference of available functions |
 
-### Request Context
-- `_req_method()` - Get request method
-- `_req_path()` - Get request path
-- `_req_param(name)` - Get URL parameter
-- `_req_query(name)` - Get query parameter
-- `_req_body()` - Get request body
-- `_req_header(name)` - Get request header
-- `_req_cookie(name)` - Get cookie value
+## Command Line Options
 
-### Session Management
-- `_session_create(userId, role, claims)` - Create session
-- `_session_get()` - Get current session
-- `_session_destroy()` - Destroy session
-- `_http_set_cookie(name, value, options)` - Set cookie
+| Option | Short | Default | What it does |
+|--------|-------|---------|--------------|
+| `--port` | `-p` | 3000 | Which port to listen on |
+| `--host` | `-h` | 0.0.0.0 | Which network interface to use |
+| `--database` | `-d` | none | Database connection URL |
+| `--verbose` | `-v` | off | Print detailed logs |
+| `--session-secret` | | auto | Secret for encrypting sessions |
+| `--jwt-secret` | | auto | Secret for signing JWT tokens |
+| `--sandbox` | | wasm dir | Root folder for file operations |
 
-### Authentication
-- `_auth_get_session()` - Get session data
-- `_auth_require_auth()` - Check if authenticated
-- `_auth_require_role(role)` - Check role
-- `_auth_hash_password(password)` - Hash password (bcrypt)
-- `_auth_verify_password(password, hash)` - Verify password
+## Database Connection URLs
 
-### Cryptography
-- `_jwt_sign(payload, secret, expiresIn)` - Sign JWT
-- `_jwt_verify(token, secret)` - Verify JWT
-- `_crypto_random_hex(bytes)` - Generate random hex
-- `_crypto_hash_sha256(data)` - SHA-256 hash
-- `_crypto_encrypt_aes(data, key)` - AES encryption
-- `_crypto_decrypt_aes(encrypted, key)` - AES decryption
+**PostgreSQL:**
+```
+postgresql://username:password@hostname:5432/database_name
+```
 
-### Database
-- `_db_query(sql, params)` - Execute query
-- `_db_execute(sql, params)` - Execute statement
-- `_db_begin()` - Begin transaction
-- `_db_commit(txId)` - Commit transaction
-- `_db_rollback(txId)` - Rollback transaction
+**SQLite (file):**
+```
+sqlite:///path/to/database.db
+```
 
-### HTTP Client
-- `http_get(url)` - HTTP GET
-- `http_post(url, body)` - HTTP POST
-- `http_put(url, body)` - HTTP PUT
-- `http_delete(url)` - HTTP DELETE
-- `http_get_with_headers(url, headers)` - GET with custom headers
+**SQLite (in memory):**
+```
+sqlite::memory:
+```
 
-### File I/O
-- `file_read(path)` - Read file
-- `file_write(path, data)` - Write file
-- `file_exists(path)` - Check if file exists
-- `file_delete(path)` - Delete file
-- `file_list_dir(path)` - List directory
+## Example: A Simple API
 
-### Environment
-- `_env_get(name)` - Get environment variable
-- `_env_is_production()` - Check if production
+Here's what a Clean Language API might look like:
 
-### Time
-- `_time_now()` - Get current time
-- `_time_epoch_ms()` - Get Unix timestamp (ms)
-- `_time_format_iso(epoch)` - Format as ISO string
-- `_time_parse_iso(iso)` - Parse ISO string
+```clean
+// Define a route that returns JSON
+function handleHealth(): string {
+    return _http_json('{"status": "ok", "message": "Server is running!"}')
+}
+
+// Set up the server
+function main(): void {
+    _http_route("GET", "/health", handleHealth)
+    _http_listen(3000)
+    print("Server started on port 3000")
+}
+```
+
+Compile it and run:
+
+```bash
+clean-node-server my-api.wasm --verbose
+```
+
+Then visit http://localhost:3000/health to see your API in action!
+
+## Project Structure
+
+```
+src/
+├── index.ts          # CLI - where it all starts
+├── server.ts         # The Express HTTP server
+├── bridge/           # All the functions your Clean code can call
+│   ├── console.ts    # print, printl, etc.
+│   ├── http-server.ts# Routes and responses
+│   ├── request.ts    # Reading request data
+│   ├── database.ts   # SQL queries
+│   ├── auth.ts       # Authentication helpers
+│   ├── crypto.ts     # Encryption and hashing
+│   ├── file.ts       # File operations
+│   └── ...more
+├── wasm/             # WebAssembly loading and management
+├── router/           # Route matching logic
+├── session/          # Session storage
+└── database/         # Database drivers
+```
 
 ## Development
 
+Want to contribute or run from source?
+
 ```bash
+# Clone the repo
+git clone https://github.com/Ivan-Pasco/clean-node-server.git
+cd clean-node-server
+
 # Install dependencies
 npm install
 
@@ -151,59 +156,21 @@ npm run build
 # Run tests
 npm test
 
-# Development mode (with ts-node)
-npm run dev -- app.wasm --verbose
+# Try it out
+npm run dev -- path/to/your-app.wasm --verbose
 ```
 
-## Architecture
+## Requirements
 
-```
-src/
-├── index.ts          # CLI entry point
-├── server.ts         # Express HTTP server
-├── wasm/
-│   ├── instance.ts   # WASM module loading
-│   ├── state.ts      # Per-request state
-│   └── memory.ts     # Memory helpers
-├── bridge/
-│   ├── index.ts      # Bridge assembly
-│   ├── console.ts    # Print functions
-│   ├── math.ts       # Math operations
-│   ├── string.ts     # String operations
-│   ├── http-server.ts# Route registration
-│   ├── request.ts    # Request context
-│   ├── session.ts    # Session management
-│   ├── auth.ts       # Authentication
-│   ├── crypto.ts     # Cryptography
-│   ├── database.ts   # Database operations
-│   ├── http-client.ts# Outbound HTTP
-│   ├── file.ts       # File I/O
-│   ├── env.ts        # Environment
-│   └── time.ts       # Time operations
-├── router/
-│   └── index.ts      # Route registry
-├── session/
-│   └── store.ts      # Session store
-├── database/
-│   ├── index.ts      # Driver factory
-│   ├── postgres.ts   # PostgreSQL driver
-│   └── sqlite.ts     # SQLite driver
-└── types/
-    └── index.ts      # TypeScript interfaces
-```
-
-## Memory Format
-
-Strings between WASM and the host use a length-prefixed format:
-
-```
-[4-byte LE length][UTF-8 bytes]
-```
-
-When passing strings from WASM to the host (function arguments), raw `(ptr, len)` pairs are used.
-
-When returning strings from the host to WASM, the host allocates memory using the WASM module's exported `malloc` function and writes the length-prefixed string.
+- Node.js 18 or later
+- Your compiled Clean Language `.wasm` files
 
 ## License
 
-MIT
+MIT - Use it however you like!
+
+## Links
+
+- [npm package](https://www.npmjs.com/package/@ivan-pasco/clean-node-server)
+- [GitHub repository](https://github.com/Ivan-Pasco/clean-node-server)
+- [Report an issue](https://github.com/Ivan-Pasco/clean-node-server/issues)
