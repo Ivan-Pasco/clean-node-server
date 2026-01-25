@@ -1,6 +1,6 @@
 # Clean Node Server
 
-Node.js host bridge for Clean Language WASM modules. This provides feature parity with the Rust `clean-server`, allowing Clean Language applications to run on Node.js.
+Node.js host bridge for Clean Language WASM modules. This provides feature parity with `clean-server`, allowing Clean Language applications to run on Node.js.
 
 ## Installation
 
