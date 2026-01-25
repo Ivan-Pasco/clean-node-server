@@ -1,6 +1,6 @@
 {
   "name": "@ivan-pasco/clean-node-server",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Node.js host bridge for Clean Language WASM modules",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
