@@ -199,6 +199,10 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _http_forbidden: httpServerBridge._http_forbidden,
       _http_server_error: httpServerBridge._http_server_error,
       _http_respond: httpServerBridge._http_respond,
+      _http_set_cache: httpServerBridge._http_set_cache,
+      _http_no_cache: httpServerBridge._http_no_cache,
+      _json_encode: httpServerBridge._json_encode,
+      _json_decode: httpServerBridge._json_decode,
 
       // Request context functions
       _req_param: requestBridge._req_param,
@@ -219,6 +223,8 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _req_is_json: requestBridge._req_is_json,
       _req_auth_token: requestBridge._req_auth_token,
       _req_has_auth: requestBridge._req_has_auth,
+      _req_form: requestBridge._req_form,
+      _req_ip: requestBridge._req_ip,
 
       // File I/O functions
       file_read: fileBridge.file_read,

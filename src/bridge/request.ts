@@ -238,5 +238,55 @@ export function createRequestBridge(getState: () => WasmState) {
       const num = parseInt(value, 10);
       return isNaN(num) ? 0 : num;
     },
+
+    /**
+     * Parse form-urlencoded POST body as JSON
+     */
+    _req_form(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+
+      // Parse body as form-urlencoded data
+      const body = ctx.body;
+      if (!body) return writeString(state, '{}');
+
+      try {
+        const params = new URLSearchParams(body);
+        const result: Record<string, string> = {};
+
+        // Convert URLSearchParams to object
+        params.forEach((value, key) => {
+          result[key] = value;
+        });
+
+        return writeString(state, JSON.stringify(result));
+      } catch {
+        return writeString(state, '{}');
+      }
+    },
+
+    /**
+     * Get client IP address
+     */
+    _req_ip(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+
+      // Check X-Forwarded-For header first (take first IP if comma-separated)
+      const forwardedFor = ctx.headers['x-forwarded-for'];
+      if (forwardedFor) {
+        const firstIp = forwardedFor.split(',')[0].trim();
+        return writeString(state, firstIp);
+      }
+
+      // Fall back to X-Real-IP header
+      const realIp = ctx.headers['x-real-ip'];
+      if (realIp) {
+        return writeString(state, realIp);
+      }
+
+      // Return "unknown" if no header found
+      return writeString(state, 'unknown');
+    },
   };
 }

@@ -1,5 +1,5 @@
 import { WasmState } from '../types';
-import { readString, log } from './helpers';
+import { readString, writeString, log } from './helpers';
 import { RouteRegistry } from '../router';
 
 /**
@@ -257,6 +257,77 @@ export function createHttpServerBridge(getState: () => WasmState) {
 
       // Return a pointer to indicate success (0 for success)
       return 0;
+    },
+
+    /**
+     * Set Cache-Control header
+     */
+    _http_set_cache(max_age: number): number {
+      const state = getState();
+
+      if (max_age > 0) {
+        // Set public caching with max-age in seconds
+        state.response.headers['Cache-Control'] = `public, max-age=${max_age}`;
+      } else {
+        // Disable caching completely
+        state.response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      }
+
+      return 1;
+    },
+
+    /**
+     * Disable caching completely
+     */
+    _http_no_cache(): number {
+      const state = getState();
+
+      // Set three headers to fully disable caching
+      state.response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+      state.response.headers['Pragma'] = 'no-cache';
+      state.response.headers['Expires'] = '0';
+
+      return 1;
+    },
+
+    /**
+     * Serialize to JSON string
+     */
+    _json_encode(value_ptr: number, value_len: number): number {
+      const state = getState();
+      const value = readString(state, value_ptr, value_len);
+
+      try {
+        // Try to parse it as JSON first (to validate)
+        const parsed = JSON.parse(value);
+        // If successful, re-serialize it
+        return writeString(state, JSON.stringify(parsed));
+      } catch {
+        // If not valid JSON, treat as string and wrap in quotes
+        return writeString(state, JSON.stringify(value));
+      }
+    },
+
+    /**
+     * Parse JSON string
+     */
+    _json_decode(json_ptr: number, json_len: number): number {
+      const state = getState();
+      const json = readString(state, json_ptr, json_len);
+
+      try {
+        // Try to parse the JSON
+        const parsed = JSON.parse(json);
+        // Return the parsed value as JSON string
+        return writeString(state, JSON.stringify(parsed));
+      } catch (error) {
+        // Return error object on failure
+        const errorMessage = error instanceof Error ? error.message : 'Invalid JSON';
+        return writeString(state, JSON.stringify({
+          error: true,
+          message: errorMessage,
+        }));
+      }
     },
   };
 }
