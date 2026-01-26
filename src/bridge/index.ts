@@ -82,7 +82,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       math_sqrt: mathBridge.math_sqrt,
       math_cbrt: mathBridge.math_cbrt,
       math_exp: mathBridge.math_exp,
-      math_exp2: () => 0, // TODO: implement exp2
+      math_exp2: mathBridge.math_exp2,
       math_ln: mathBridge.math_log, // ln is natural log
       math_log: mathBridge.math_log,
       math_log10: mathBridge.math_log10,
@@ -139,25 +139,15 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       http_head: httpClientBridge.http_get, // HEAD treated as GET for now
       http_options: httpClientBridge.http_get, // OPTIONS treated as GET for now
       http_get_with_headers: httpClientBridge.http_get_with_headers,
-      http_post_with_headers: (
-        urlPtr: number,
-        urlLen: number,
-        bodyPtr: number,
-        bodyLen: number,
-        headersPtr: number,
-        headersLen: number
-      ) => {
-        // TODO: implement with headers
-        return httpClientBridge.http_post(urlPtr, urlLen, bodyPtr, bodyLen);
-      },
+      http_post_with_headers: httpClientBridge.http_post_with_headers,
       http_post_json: httpClientBridge.http_post_json,
       http_put_json: httpClientBridge.http_put,
       http_patch_json: httpClientBridge.http_patch,
       http_post_form: httpClientBridge.http_post,
-      http_set_user_agent: () => {}, // No-op for now
+      http_set_user_agent: httpClientBridge.http_set_user_agent,
       http_set_timeout: httpClientBridge.http_set_timeout,
-      http_set_max_redirects: () => {}, // No-op for now
-      http_enable_cookies: () => {}, // No-op for now
+      http_set_max_redirects: httpClientBridge.http_set_max_redirects,
+      http_enable_cookies: httpClientBridge.http_enable_cookies,
       http_get_response_code: httpClientBridge.http_get_response_code,
       http_get_response_headers: httpClientBridge.http_get_response_headers,
       http_encode_url: (ptr: number, len: number) => {

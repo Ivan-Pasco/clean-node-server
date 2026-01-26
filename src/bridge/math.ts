@@ -64,6 +64,10 @@ export function createMathBridge() {
       return Math.exp(x);
     },
 
+    math_exp2(x: number): number {
+      return Math.pow(2, x);
+    },
+
     math_expm1(x: number): number {
       return Math.expm1(x);
     },
