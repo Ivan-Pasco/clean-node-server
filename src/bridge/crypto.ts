@@ -58,6 +58,8 @@ export function createCryptoBridge(getState: () => WasmState) {
 
     /**
      * Sign a JWT token
+     * Plugin signature: _jwt_sign(string, string, string) -> string
+     * WASM: (payload_ptr, payload_len, secret_ptr, secret_len, expires_ptr, expires_len) -> i32
      *
      * @returns Pointer to JWT token string
      */
@@ -66,18 +68,26 @@ export function createCryptoBridge(getState: () => WasmState) {
       payloadLen: number,
       secretPtr: number,
       secretLen: number,
-      expiresIn: number
+      expiresPtr: number,
+      expiresLen: number
     ): number {
       const state = getState();
       const payloadJson = readString(state, payloadPtr, payloadLen);
       const secret = secretLen > 0 ? readString(state, secretPtr, secretLen) : state.config.jwtSecret;
+      const expiresStr = expiresLen > 0 ? readString(state, expiresPtr, expiresLen) : '';
 
       try {
         const payload = JSON.parse(payloadJson);
         const options: jwt.SignOptions = {};
 
-        if (expiresIn > 0) {
-          options.expiresIn = expiresIn;
+        if (expiresStr) {
+          // Try parsing as a number (seconds), otherwise use as duration string (e.g., "1h", "7d")
+          const asNumber = Number(expiresStr);
+          if (!isNaN(asNumber) && asNumber > 0) {
+            options.expiresIn = asNumber;
+          } else {
+            (options as Record<string, unknown>).expiresIn = expiresStr;
+          }
         }
 
         const token = jwt.sign(payload, secret, options);

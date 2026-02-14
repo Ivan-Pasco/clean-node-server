@@ -329,5 +329,49 @@ export function createHttpServerBridge(getState: () => WasmState) {
         }));
       }
     },
+
+    /**
+     * Extract a value from JSON by dot-path
+     * e.g., _json_get('{"user":{"email":"a@b.com"}}', 'user.email') -> '"a@b.com"'
+     */
+    _json_get(
+      jsonPtr: number,
+      jsonLen: number,
+      pathPtr: number,
+      pathLen: number
+    ): number {
+      const state = getState();
+      const jsonStr = readString(state, jsonPtr, jsonLen);
+      const path = readString(state, pathPtr, pathLen);
+
+      try {
+        const parsed = JSON.parse(jsonStr);
+        const parts = path.split('.');
+        let current: unknown = parsed;
+
+        for (const part of parts) {
+          if (current === null || current === undefined) {
+            return writeString(state, '');
+          }
+          if (typeof current === 'object' && current !== null) {
+            current = (current as Record<string, unknown>)[part];
+          } else {
+            return writeString(state, '');
+          }
+        }
+
+        if (current === undefined || current === null) {
+          return writeString(state, '');
+        }
+
+        if (typeof current === 'string') {
+          return writeString(state, current);
+        }
+
+        return writeString(state, JSON.stringify(current));
+      } catch {
+        return writeString(state, '');
+      }
+    },
   };
 }

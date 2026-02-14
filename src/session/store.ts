@@ -165,6 +165,47 @@ export class InMemorySessionStore implements SessionStore {
   }
 
   /**
+   * Store a key-value pair in a session's claims
+   */
+  storeValue(sessionId: string, key: string, value: string): boolean {
+    const session = this.get(sessionId);
+    if (!session) return false;
+    session.claims[key] = value;
+    this.sessions.set(sessionId, session);
+    return true;
+  }
+
+  /**
+   * Get a value by key from a session's claims
+   */
+  getValue(sessionId: string, key: string): string | undefined {
+    const session = this.get(sessionId);
+    if (!session || !(key in session.claims)) return undefined;
+    const val = session.claims[key];
+    return typeof val === 'string' ? val : JSON.stringify(val);
+  }
+
+  /**
+   * Delete a key from a session's claims
+   */
+  deleteValue(sessionId: string, key: string): boolean {
+    const session = this.get(sessionId);
+    if (!session || !(key in session.claims)) return false;
+    delete session.claims[key];
+    this.sessions.set(sessionId, session);
+    return true;
+  }
+
+  /**
+   * Check if a key exists in a session's claims
+   */
+  hasKey(sessionId: string, key: string): boolean {
+    const session = this.get(sessionId);
+    if (!session) return false;
+    return key in session.claims;
+  }
+
+  /**
    * Generate a secure random session ID
    */
   private generateSessionId(): string {

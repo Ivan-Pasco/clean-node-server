@@ -15,6 +15,8 @@ import { createEnvBridge } from './env';
 import { createTimeBridge } from './time';
 import { createMemoryRuntimeBridge } from './memory-runtime';
 import { createInputBridge } from './input';
+import { createArrayBridge } from './array';
+import { createListBridge } from './list';
 import { readString, writeString } from './helpers';
 
 /**
@@ -40,6 +42,8 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const timeBridge = createTimeBridge(getState);
   const memoryRuntimeBridge = createMemoryRuntimeBridge(getState);
   const inputBridge = createInputBridge(getState);
+  const arrayBridge = createArrayBridge(getState);
+  const listBridge = createListBridge(getState);
 
   // Assemble into WASM import object
   // Functions are organized by module namespace
@@ -129,6 +133,28 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       string_repeat: stringBridge.string_repeat,
       string_pad_start: stringBridge.string_pad_start,
       string_pad_end: stringBridge.string_pad_end,
+      // String dot-notation aliases (compiler may generate these)
+      'string.toNumber': stringBridge.string_to_float,
+      'string.toUpperCase': stringBridge.string_to_upper,
+      'string.toLowerCase': stringBridge.string_to_lower,
+
+      // Array functions
+      array_get: arrayBridge.array_get,
+      array_set: arrayBridge.array_set,
+      array_push: arrayBridge.array_push,
+      array_pop: arrayBridge.array_pop,
+      array_slice: arrayBridge.array_slice,
+      array_concat: arrayBridge.array_concat,
+      array_reverse: arrayBridge.array_reverse,
+      array_sort: arrayBridge.array_sort,
+      array_filter: arrayBridge.array_filter,
+      array_map: arrayBridge.array_map,
+      array_reduce: arrayBridge.array_reduce,
+      array_find: arrayBridge.array_find,
+      array_contains: arrayBridge.array_contains,
+
+      // List functions (dot-notation imports from compiler)
+      ...listBridge,
 
       // HTTP client functions
       http_get: httpClientBridge.http_get,
@@ -193,6 +219,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _http_no_cache: httpServerBridge._http_no_cache,
       _json_encode: httpServerBridge._json_encode,
       _json_decode: httpServerBridge._json_decode,
+      _json_get: httpServerBridge._json_get,
 
       // Request context functions
       _req_param: requestBridge._req_param,
@@ -262,7 +289,7 @@ export { createStringBridge } from './string';
 export { createHttpServerBridge, setRouteRegistry, getRouteRegistry } from './http-server';
 export { createRequestBridge } from './request';
 export { createSessionBridge } from './session';
-export { createAuthBridge } from './auth';
+export { createAuthBridge, getRegisteredRoles, resetRegisteredRoles } from './auth';
 export { createCryptoBridge } from './crypto';
 export { createDatabaseBridge } from './database';
 export { createHttpClientBridge } from './http-client';
@@ -271,3 +298,5 @@ export { createEnvBridge } from './env';
 export { createTimeBridge } from './time';
 export { createMemoryRuntimeBridge, resetMemoryRuntime } from './memory-runtime';
 export { createInputBridge } from './input';
+export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
+export { createListBridge, getListStore, resetListStore } from './list';

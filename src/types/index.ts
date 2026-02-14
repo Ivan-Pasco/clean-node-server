@@ -150,6 +150,10 @@ export interface SessionStore {
   get(sessionId: string): SessionData | undefined;
   destroy(sessionId: string): boolean;
   cleanup(): void;
+  storeValue?(sessionId: string, key: string, value: string): boolean;
+  getValue?(sessionId: string, key: string): string | undefined;
+  deleteValue?(sessionId: string, key: string): boolean;
+  hasKey?(sessionId: string, key: string): boolean;
 }
 
 /**

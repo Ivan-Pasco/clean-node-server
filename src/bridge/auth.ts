@@ -3,6 +3,26 @@ import { readString, writeString, log } from './helpers';
 import { getRequestContext } from '../wasm/state';
 
 /**
+ * Registered roles and their permissions
+ * Populated by _roles_register, used by _auth_can
+ */
+const registeredRoles = new Map<string, string[]>();
+
+/**
+ * Get the registered roles map (for testing)
+ */
+export function getRegisteredRoles(): Map<string, string[]> {
+  return registeredRoles;
+}
+
+/**
+ * Reset registered roles (for testing)
+ */
+export function resetRegisteredRoles(): void {
+  registeredRoles.clear();
+}
+
+/**
  * Create authentication bridge functions
  */
 export function createAuthBridge(getState: () => WasmState) {
@@ -244,7 +264,15 @@ export function createAuthBridge(getState: () => WasmState) {
         return 1;
       }
 
-      // Check role-based permissions
+      // Check registered roles (from _roles_register)
+      const registered = registeredRoles.get(session.role);
+      if (registered) {
+        if (registered.includes('*') || registered.includes(permission)) {
+          return 1;
+        }
+      }
+
+      // Fallback to hardcoded role-based permissions
       const rolePermissions: Record<string, string[]> = {
         admin: ['*'],
         editor: ['read', 'write', 'edit', 'delete'],
@@ -334,6 +362,69 @@ export function createAuthBridge(getState: () => WasmState) {
         role: session.role,
         claims: session.claims,
       }));
+    },
+
+    /**
+     * Register role definitions
+     * Accepts JSON: {"admin": ["read","write","delete"], "editor": ["read","write"]}
+     *
+     * @returns 1 on success, 0 on failure
+     */
+    _roles_register(rolesJsonPtr: number, rolesJsonLen: number): number {
+      const state = getState();
+      const rolesJson = readString(state, rolesJsonPtr, rolesJsonLen);
+
+      try {
+        const roles = JSON.parse(rolesJson) as Record<string, string[]>;
+
+        for (const [role, permissions] of Object.entries(roles)) {
+          if (Array.isArray(permissions)) {
+            registeredRoles.set(role, permissions);
+          }
+        }
+
+        log(state, 'AUTH', `Registered ${Object.keys(roles).length} roles`);
+        return 1;
+      } catch (err) {
+        log(state, 'AUTH', 'Failed to parse roles JSON', err);
+        return 0;
+      }
+    },
+
+    /**
+     * Check if a role has a specific permission
+     *
+     * @returns 1 if role has permission, 0 otherwise
+     */
+    _role_has_permission(
+      rolePtr: number,
+      roleLen: number,
+      permPtr: number,
+      permLen: number
+    ): number {
+      const state = getState();
+      const role = readString(state, rolePtr, roleLen);
+      const permission = readString(state, permPtr, permLen);
+
+      const permissions = registeredRoles.get(role);
+      if (!permissions) {
+        return 0;
+      }
+
+      return (permissions.includes('*') || permissions.includes(permission)) ? 1 : 0;
+    },
+
+    /**
+     * Get all permissions for a role
+     *
+     * @returns Pointer to JSON array of permissions, or empty array
+     */
+    _role_get_permissions(rolePtr: number, roleLen: number): number {
+      const state = getState();
+      const role = readString(state, rolePtr, roleLen);
+
+      const permissions = registeredRoles.get(role) || [];
+      return writeString(state, JSON.stringify(permissions));
     },
   };
 }

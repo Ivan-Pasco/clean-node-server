@@ -1,5 +1,5 @@
 import { WasmState } from '../types';
-import { readString, writeString, parseJson, log } from './helpers';
+import { readString, writeString, log } from './helpers';
 import { getRequestContext, addResponseCookie } from '../wasm/state';
 
 /**
@@ -309,6 +309,157 @@ export function createSessionBridge(getState: () => WasmState) {
         maxAge: 0,
         path: '/',
       });
+    },
+
+    /**
+     * Store a key-value pair in the current session
+     * Plugin signature: _session_store(string, string) -> integer
+     */
+    _session_store(
+      keyPtr: number,
+      keyLen: number,
+      valuePtr: number,
+      valueLen: number
+    ): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const key = readString(state, keyPtr, keyLen);
+      const value = readString(state, valuePtr, valueLen);
+
+      if (!ctx.sessionId) {
+        log(state, 'SESSION', 'No session for _session_store');
+        return 0;
+      }
+
+      if (state.sessionStore.storeValue) {
+        return state.sessionStore.storeValue(ctx.sessionId, key, value) ? 1 : 0;
+      }
+
+      // Fallback: update claims directly
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session) {
+        session.claims[key] = value;
+        return 1;
+      }
+      return 0;
+    },
+
+    /**
+     * Get a value by key from the current session
+     * Plugin signature: _session_get(string) -> string
+     * Note: This is registered as _session_get_value to avoid conflict with the 0-param _session_get
+     */
+    _session_get_value(keyPtr: number, keyLen: number): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const key = readString(state, keyPtr, keyLen);
+
+      if (!ctx.sessionId) {
+        return writeString(state, '');
+      }
+
+      if (state.sessionStore.getValue) {
+        const value = state.sessionStore.getValue(ctx.sessionId, key);
+        return writeString(state, value || '');
+      }
+
+      // Fallback: read from claims directly
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session && key in session.claims) {
+        const val = session.claims[key];
+        return writeString(state, typeof val === 'string' ? val : JSON.stringify(val));
+      }
+      return writeString(state, '');
+    },
+
+    /**
+     * Delete a key from the current session
+     * Plugin signature: _session_delete(string) -> integer
+     */
+    _session_delete(keyPtr: number, keyLen: number): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const key = readString(state, keyPtr, keyLen);
+
+      if (!ctx.sessionId) {
+        return 0;
+      }
+
+      if (state.sessionStore.deleteValue) {
+        return state.sessionStore.deleteValue(ctx.sessionId, key) ? 1 : 0;
+      }
+
+      // Fallback
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session && key in session.claims) {
+        delete session.claims[key];
+        return 1;
+      }
+      return 0;
+    },
+
+    /**
+     * Check if a key exists in the current session
+     * Plugin signature: _session_exists(string) -> integer
+     * Note: Registered as _session_has_key to avoid conflict with 0-param _session_exists
+     */
+    _session_has_key(keyPtr: number, keyLen: number): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const key = readString(state, keyPtr, keyLen);
+
+      if (!ctx.sessionId) {
+        return 0;
+      }
+
+      if (state.sessionStore.hasKey) {
+        return state.sessionStore.hasKey(ctx.sessionId, key) ? 1 : 0;
+      }
+
+      // Fallback
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session) {
+        return key in session.claims ? 1 : 0;
+      }
+      return 0;
+    },
+
+    /**
+     * Store a CSRF token in the current session
+     */
+    _session_set_csrf(tokenPtr: number, tokenLen: number): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const token = readString(state, tokenPtr, tokenLen);
+
+      if (!ctx.sessionId) {
+        return 0;
+      }
+
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session) {
+        session.claims['_csrf_token'] = token;
+        return 1;
+      }
+      return 0;
+    },
+
+    /**
+     * Get the CSRF token from the current session
+     */
+    _session_get_csrf(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+
+      if (!ctx.sessionId) {
+        return writeString(state, '');
+      }
+
+      const session = state.sessionStore.get(ctx.sessionId);
+      if (session && '_csrf_token' in session.claims) {
+        return writeString(state, String(session.claims['_csrf_token']));
+      }
+      return writeString(state, '');
     },
   };
 }
