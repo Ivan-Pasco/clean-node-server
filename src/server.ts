@@ -243,6 +243,15 @@ export class CleanNodeServer {
         state.response.headers['Content-Type'] = 'text/html; charset=utf-8';
       }
 
+      // If CSS was injected and the response is HTML, inject a <style> block before </head>
+      if (
+        state.injectedCss?.length &&
+        state.response.headers['Content-Type']?.includes('text/html')
+      ) {
+        const cssBlock = `<style>${state.injectedCss.join('\n')}</style>`;
+        state.response.body = state.response.body.replace('</head>', `${cssBlock}\n</head>`);
+      }
+
       // Get response from state
       const response = getResponse(state);
 

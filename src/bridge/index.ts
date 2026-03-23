@@ -17,6 +17,8 @@ import { createMemoryRuntimeBridge } from './memory-runtime';
 import { createInputBridge } from './input';
 import { createArrayBridge } from './array';
 import { createListBridge } from './list';
+import { createMigrationBridge } from './migration';
+import { createUiBridge } from './ui';
 import { readString, writeString } from './helpers';
 
 /**
@@ -44,6 +46,8 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const inputBridge = createInputBridge(getState);
   const arrayBridge = createArrayBridge(getState);
   const listBridge = createListBridge(getState);
+  const migrationBridge = createMigrationBridge(getState);
+  const uiBridge = createUiBridge(getState);
 
   // Assemble into WASM import object
   // Functions are organized by module namespace
@@ -273,6 +277,18 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // Time/date functions
       ...timeBridge,
 
+      // Migration functions
+      _db_configure: migrationBridge._db_configure,
+      _db_register_migration: migrationBridge._db_register_migration,
+      _db_migration_diff: migrationBridge._db_migration_diff,
+      _db_run_migrations: migrationBridge._db_run_migrations,
+      _db_rollback_migration: migrationBridge._db_rollback_migration,
+      _db_migration_status: migrationBridge._db_migration_status,
+
+      // UI functions
+      _ui_load_layout: uiBridge._ui_load_layout,
+      _ui_inject_head_css: uiBridge._ui_inject_head_css,
+
       // Memory management stubs
       __stack_pointer: new WebAssembly.Global(
         { value: 'i32', mutable: true },
@@ -300,3 +316,5 @@ export { createMemoryRuntimeBridge, resetMemoryRuntime } from './memory-runtime'
 export { createInputBridge } from './input';
 export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
 export { createListBridge, getListStore, resetListStore } from './list';
+export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
+export { createUiBridge } from './ui';

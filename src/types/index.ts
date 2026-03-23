@@ -140,6 +140,8 @@ export interface WasmState {
   sessionStore: SessionStore;
   routeRegistry: RouteHandler[];
   database?: DatabaseDriver;
+  injectedCss?: string[];
+  projectRoot?: string;
 }
 
 /**
