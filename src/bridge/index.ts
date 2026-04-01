@@ -286,8 +286,8 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _db_migration_status: migrationBridge._db_migration_status,
 
       // UI functions
-      _ui_load_layout: uiBridge._ui_load_layout,
-      _ui_inject_head_css: uiBridge._ui_inject_head_css,
+      _ui_loadLayout: uiBridge._ui_loadLayout,
+      _ui_injectHeadCss: uiBridge._ui_injectHeadCss,
 
       // Memory management stubs
       __stack_pointer: new WebAssembly.Global(

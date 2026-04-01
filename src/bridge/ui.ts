@@ -31,7 +31,7 @@ export function createUiBridge(getState: () => WasmState) {
      * Returns a pointer to the HTML contents string, or an empty string if the
      * file does not exist or cannot be read.
      */
-    _ui_load_layout(layoutNamePtr: number, layoutNameLen: number): number {
+    _ui_loadLayout(layoutNamePtr: number, layoutNameLen: number): number {
       const state = getState();
       const layoutName = readString(state, layoutNamePtr, layoutNameLen);
 
@@ -74,7 +74,7 @@ export function createUiBridge(getState: () => WasmState) {
      *
      * Returns 1 on success.
      */
-    _ui_inject_head_css(cssPtr: number, cssLen: number): number {
+    _ui_injectHeadCss(cssPtr: number, cssLen: number): number {
       const state = getState();
       const css = readString(state, cssPtr, cssLen);
 
