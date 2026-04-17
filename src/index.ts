@@ -22,10 +22,21 @@ program
   .option('--session-secret <string>', 'Session secret key', 'clean-node-server-secret')
   .option('--jwt-secret <string>', 'JWT secret key', 'clean-node-server-jwt-secret')
   .option('--sandbox <path>', 'Sandbox root for file operations (default: current directory)')
+  .option('--memory-limit <MB>', 'Cap WASM linear memory per instance (MB)')
   .action(async (wasmFile: string, options) => {
     try {
       // Resolve WASM file path
       const wasmPath = path.resolve(wasmFile);
+
+      let memoryLimitBytes: number | undefined;
+      if (options.memoryLimit !== undefined) {
+        const mb = Number(options.memoryLimit);
+        if (!Number.isFinite(mb) || mb <= 0) {
+          console.error(`Invalid --memory-limit: ${options.memoryLimit} (must be a positive number of MB)`);
+          process.exit(1);
+        }
+        memoryLimitBytes = Math.floor(mb * 1024 * 1024);
+      }
 
       // Build configuration
       const config: ServerConfig = {
@@ -35,6 +46,7 @@ program
         verbose: options.verbose,
         sessionSecret: options.sessionSecret,
         jwtSecret: options.jwtSecret,
+        memoryLimitBytes,
       };
 
       if (config.verbose) {
@@ -44,6 +56,7 @@ program
           host: config.host,
           database: config.databaseUrl ? '***' : undefined,
           verbose: config.verbose,
+          memoryLimitBytes: config.memoryLimitBytes,
         });
       }
 

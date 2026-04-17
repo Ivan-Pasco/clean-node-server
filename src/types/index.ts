@@ -126,6 +126,20 @@ export interface ServerConfig {
   verbose: boolean;
   sessionSecret: string;
   jwtSecret: string;
+  memoryLimitBytes?: number;
+}
+
+/**
+ * Per-request memory statistics
+ */
+export interface MemoryStats {
+  initialMemorySize: number;
+  peakMemorySize: number;
+  initialHeapPtr: number;
+  peakAllocation: number;
+  growCount: number;
+  allocCount: number;
+  oomCount: number;
 }
 
 /**
@@ -142,6 +156,7 @@ export interface WasmState {
   database?: DatabaseDriver;
   injectedCss?: string[];
   projectRoot?: string;
+  memoryStats: MemoryStats;
 }
 
 /**

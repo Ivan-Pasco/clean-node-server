@@ -7,6 +7,7 @@ import {
   SessionStore,
   RouteHandler,
   DatabaseDriver,
+  MemoryStats,
 } from '../types';
 
 /**
@@ -20,6 +21,64 @@ function createDefaultResponse(): WasmResponse {
     },
     body: '',
     cookies: [],
+  };
+}
+
+/**
+ * Read the `__heap_ptr` global exported by the WASM module.
+ * Spec: MEMORY_POLICY.md §7.2 — the module's `__heap_ptr` export is the
+ * authoritative heap start. Falls back to 65,536 for modules predating this contract.
+ */
+function readInitialHeapPtr(instance: WebAssembly.Instance): number {
+  const global = (instance.exports as Record<string, unknown>).__heap_ptr;
+  if (global && typeof (global as WebAssembly.Global).value === 'number') {
+    return (global as WebAssembly.Global).value as number;
+  }
+  return 65536;
+}
+
+/**
+ * Wrap `malloc` to track memory stats (grow count, peak allocation) and
+ * enforce the `memoryLimitBytes` cap from ServerConfig.
+ *
+ * Spec: MEMORY_POLICY.md §9.4 (per-request observability) and the
+ * clean-node-server task 3 (memory-limit CLI flag).
+ */
+function wrapMalloc(exports: WasmExports, stats: MemoryStats, config: ServerConfig): void {
+  const originalMalloc = exports.malloc;
+
+  exports.malloc = (size: number): number => {
+    const beforeBytes = exports.memory.buffer.byteLength;
+
+    if (config.memoryLimitBytes !== undefined && beforeBytes + size > config.memoryLimitBytes) {
+      stats.oomCount++;
+      if (config.verbose) {
+        const ts = new Date().toISOString();
+        console.warn(
+          `[${ts}] [MEM] allocation of ${size} bytes denied: would exceed limit ${config.memoryLimitBytes} (current ${beforeBytes})`
+        );
+      }
+      return 0;
+    }
+
+    const ptr = originalMalloc(size);
+    const afterBytes = exports.memory.buffer.byteLength;
+
+    if (afterBytes > beforeBytes) {
+      stats.growCount++;
+    }
+    if (afterBytes > stats.peakMemorySize) {
+      stats.peakMemorySize = afterBytes;
+    }
+    if (ptr > 0) {
+      stats.allocCount++;
+      const top = ptr + size;
+      if (top > stats.peakAllocation) {
+        stats.peakAllocation = top;
+      }
+    }
+
+    return ptr;
   };
 }
 
@@ -43,6 +102,21 @@ export function createWasmState(
     throw new Error('WASM module must export malloc function');
   }
 
+  const initialHeapPtr = readInitialHeapPtr(instance);
+  const initialMemorySize = exports.memory.buffer.byteLength;
+
+  const memoryStats: MemoryStats = {
+    initialMemorySize,
+    peakMemorySize: initialMemorySize,
+    initialHeapPtr,
+    peakAllocation: initialHeapPtr,
+    growCount: 0,
+    allocCount: 0,
+    oomCount: 0,
+  };
+
+  wrapMalloc(exports, memoryStats, config);
+
   return {
     instance,
     exports,
@@ -52,6 +126,7 @@ export function createWasmState(
     sessionStore,
     routeRegistry,
     database,
+    memoryStats,
   };
 }
 

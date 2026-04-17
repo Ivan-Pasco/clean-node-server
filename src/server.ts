@@ -142,6 +142,42 @@ export class CleanNodeServer {
   }
 
   /**
+   * Log per-request WASM memory stats (MEMORY_POLICY.md §9.4).
+   */
+  private logMemoryStats(state: WasmState, req: Request): void {
+    if (!this.config.verbose) return;
+
+    const stats = state.memoryStats;
+    const currentHeapPtr = this.readCurrentHeapPtr(state);
+    const currentMemorySize = state.exports.memory.buffer.byteLength;
+
+    const payload = {
+      event: 'wasm_request_memory',
+      method: req.method,
+      path: req.url,
+      initial_memory_bytes: stats.initialMemorySize,
+      peak_memory_bytes: Math.max(stats.peakMemorySize, currentMemorySize),
+      initial_heap_ptr: stats.initialHeapPtr,
+      current_heap_ptr: currentHeapPtr,
+      peak_allocation_bytes: Math.max(stats.peakAllocation, currentHeapPtr) - stats.initialHeapPtr,
+      grow_count: stats.growCount,
+      alloc_count: stats.allocCount,
+      oom_count: stats.oomCount,
+      memory_limit_bytes: this.config.memoryLimitBytes,
+    };
+
+    console.log(`[${new Date().toISOString()}] [MEM]`, JSON.stringify(payload));
+  }
+
+  private readCurrentHeapPtr(state: WasmState): number {
+    const global = (state.instance.exports as Record<string, unknown>).__heap_ptr;
+    if (global && typeof (global as WebAssembly.Global).value === 'number') {
+      return (global as WebAssembly.Global).value as number;
+    }
+    return state.memoryStats.initialHeapPtr;
+  }
+
+  /**
    * Handle incoming HTTP request
    */
   private async handleRequest(req: Request, res: Response): Promise<void> {
@@ -282,6 +318,8 @@ export class CleanNodeServer {
           message: err instanceof Error ? err.message : 'Unknown error',
         },
       });
+    } finally {
+      this.logMemoryStats(state, req);
     }
   }
 
