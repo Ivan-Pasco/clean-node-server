@@ -56,3 +56,16 @@ Files Affected: [List of files in the target component that need changes]
 - Make changes to other components' configuration files
 - Modify shared resources without coordination
 - Skip the prompt creation step for cross-component issues
+
+## Documentation Sync Protocol
+
+Facts about the language live in `spec/` (at the project root). Facts about the platform live in `platform-architecture/`. Do not duplicate them here — link to them instead.
+
+**When you make a change in this component, update the corresponding spec file in the same commit:**
+
+| Change type | Update required |
+|-------------|-----------------|
+| New or changed host bridge function | `platform-architecture/HOST_BRIDGE.md` |
+| New or changed execution layer | `platform-architecture/EXECUTION_LAYERS.md` |
+
+The spec files are the single source of truth. Component documentation explains implementation — it does not redefine language rules.
