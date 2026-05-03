@@ -96,6 +96,56 @@ export class SqliteDriver implements DatabaseDriver {
     }
   }
 
+  querySync(sql: string, params: unknown[]): DbResult {
+    try {
+      const stmt = this.db.prepare(sql);
+      const rows = stmt.all(...params) as Record<string, unknown>[];
+      return formatDbResult(rows);
+    } catch (err) {
+      return formatDbError(err as Error);
+    }
+  }
+
+  executeSync(sql: string, params: unknown[]): number {
+    try {
+      const stmt = this.db.prepare(sql);
+      const result = stmt.run(...params);
+      return result.changes;
+    } catch (err) {
+      console.error('Database execute error:', err);
+      return -1;
+    }
+  }
+
+  beginTransactionSync(): string {
+    const txId = `tx_${++this.txCounter}_${Date.now()}`;
+    this.db.exec('BEGIN TRANSACTION');
+    this.transactions.set(txId, true);
+    return txId;
+  }
+
+  commitSync(txId: string): void {
+    if (!this.transactions.has(txId)) {
+      throw new Error(`Transaction not found: ${txId}`);
+    }
+    try {
+      this.db.exec('COMMIT');
+    } finally {
+      this.transactions.delete(txId);
+    }
+  }
+
+  rollbackSync(txId: string): void {
+    if (!this.transactions.has(txId)) {
+      throw new Error(`Transaction not found: ${txId}`);
+    }
+    try {
+      this.db.exec('ROLLBACK');
+    } finally {
+      this.transactions.delete(txId);
+    }
+  }
+
   /**
    * Get last insert rowid
    */

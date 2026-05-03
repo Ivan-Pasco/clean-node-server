@@ -9,14 +9,14 @@ import { DatabaseDriver, DbResult } from '../types';
  * - sqlite:///path/to/database.db
  * - sqlite::memory:
  */
-export async function createDatabaseDriver(url: string): Promise<DatabaseDriver> {
+export async function createDatabaseDriver(url: string, maxConnections?: number): Promise<DatabaseDriver> {
   const protocol = url.split('://')[0].toLowerCase();
 
   switch (protocol) {
     case 'postgres':
     case 'postgresql': {
-      const { PostgresDriver } = await import('./postgres');
-      return new PostgresDriver(url);
+      const { SyncPostgresDriver } = await import('./sync-postgres');
+      return new SyncPostgresDriver(url, maxConnections);
     }
 
     case 'sqlite': {

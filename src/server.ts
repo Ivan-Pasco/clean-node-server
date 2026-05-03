@@ -1,37 +1,60 @@
+import * as http from 'http';
+import * as https from 'https';
+import * as fs from 'fs';
+import { randomUUID } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
+import cors from 'cors';
+import rateLimit from 'express-rate-limit';
+import compression from 'compression';
+import pinoHttp from 'pino-http';
 import {
   WasmState,
   ServerConfig,
   RequestContext,
-  SessionStore,
+  AnySessionStore,
   DatabaseDriver,
+  SyncHttpWorker,
 } from './types';
-import { WasmLoader, WasmImports } from './wasm/instance';
+import { WasmLoader } from './wasm/instance';
 import { setRequestContext, getResponse } from './wasm/state';
 import { RouteRegistry, parseUrl } from './router';
 import { createBridgeImports } from './bridge';
 import { getRouteRegistry, setRouteRegistry, getConfiguredPort } from './bridge/http-server';
 import { readLengthPrefixedString } from './wasm/memory';
+import { getSandboxRoot } from './bridge/file';
+import { SyncHttpClient } from './bridge/http-client';
+import { RequestWorkerPool } from './workers/request-pool';
+import { createLogger, getLogger } from './telemetry/logger';
+import {
+  registry,
+  httpRequestsTotal,
+  httpRequestDuration,
+  workerPoolAvailable,
+  workerPoolInUse,
+  workerPoolQueued,
+  workerPoolTotal,
+} from './telemetry/metrics';
 
-/**
- * Clean Node Server
- *
- * HTTP server that runs Clean Language WASM modules
- */
+const DEFAULT_POOL_SIZE = Number(process.env.WASM_POOL_SIZE ?? '4');
+
 export class CleanNodeServer {
   private app: express.Application;
   private loader: WasmLoader;
   private config: ServerConfig;
-  private sessionStore: SessionStore;
+  private sessionStore: AnySessionStore;
   private database?: DatabaseDriver;
   private routeRegistry: RouteRegistry;
   private wasmModule: WebAssembly.Module | null = null;
+  private httpServer: http.Server | https.Server | null = null;
+  private requestPool: RequestWorkerPool | null = null;
+  private httpWorker: SyncHttpWorker | null = null;
+  private inflightCount = 0;
 
   constructor(
     wasmPath: string,
     config: ServerConfig,
-    sessionStore: SessionStore,
+    sessionStore: AnySessionStore,
     database?: DatabaseDriver
   ) {
     this.app = express();
@@ -40,37 +63,63 @@ export class CleanNodeServer {
     this.sessionStore = sessionStore;
     this.database = database;
     this.routeRegistry = new RouteRegistry();
+    this.httpWorker = new SyncHttpClient();
 
     this.setupMiddleware();
   }
 
-  /**
-   * Setup Express middleware
-   */
   private setupMiddleware(): void {
-    // Parse JSON bodies
-    this.app.use(express.json({ limit: '10mb' }));
+    const log = createLogger(this.config.verbose);
 
-    // Parse URL-encoded bodies
-    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-    // Parse cookies
-    this.app.use(cookieParser());
-
-    // Raw body for non-JSON requests
-    this.app.use(express.text({ type: 'text/*', limit: '10mb' }));
-
-    // Request logging in verbose mode
-    if (this.config.verbose) {
-      this.app.use((req: Request, _res: Response, next: NextFunction) => {
-        console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-        next();
-      });
+    if (this.config.rateLimitMax && this.config.rateLimitMax > 0) {
+      this.app.use(rateLimit({
+        windowMs: this.config.rateLimitWindowMs ?? 60_000,
+        max: this.config.rateLimitMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+      }));
     }
 
-    // Disable caching and ensure proper MIME type handling
+    if (this.config.corsOrigin) {
+      this.app.use(cors({ origin: this.config.corsOrigin, credentials: true }));
+    }
+
+    // Structured request logging with auto-generated correlation IDs.
+    this.app.use(pinoHttp({
+      logger: log,
+      genReqId: (req) =>
+        (req.headers['x-request-id'] as string | undefined) || randomUUID(),
+      customSuccessMessage: (req, res) =>
+        `${req.method} ${req.url} ${res.statusCode}`,
+      customErrorMessage: (req, res, err) =>
+        `${req.method} ${req.url} ${res.statusCode} — ${err.message}`,
+      autoLogging: this.config.verbose,
+    }));
+
+    // Propagate request ID to response header for client-side correlation.
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      res.setHeader('X-Request-ID', (req as unknown as { id: string }).id ?? randomUUID());
+      next();
+    });
+
+    // Compress all responses (gzip/deflate/br).
+    this.app.use(compression());
+
+    this.app.use(express.json({ limit: '10mb' }));
+    this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    this.app.use(cookieParser());
+    this.app.use(express.text({ type: 'text/*', limit: '10mb' }));
+
+    // Security headers.
     this.app.use((_req: Request, res: Response, next: NextFunction) => {
       res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('X-Frame-Options', 'DENY');
+      res.setHeader('X-XSS-Protection', '1; mode=block');
+      res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+      res.setHeader('Content-Security-Policy', "default-src 'self'");
+      if (this.config.tlsCert) {
+        res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+      }
       res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       res.setHeader('Pragma', 'no-cache');
       res.setHeader('Expires', '0');
@@ -78,20 +127,13 @@ export class CleanNodeServer {
     });
   }
 
-  /**
-   * Initialize the server by loading WASM and calling start()
-   */
   async initialize(): Promise<void> {
-    // Load and compile WASM module
-    this.wasmModule = await this.loader.load();
+    const log = createLogger(this.config.verbose);
 
-    // Set shared route registry
+    this.wasmModule = await this.loader.load();
     setRouteRegistry(this.routeRegistry);
 
-    // Create initial instance to call start() and register routes
-    const initState = await this.createWasmState();
-
-    // Call start function to register routes
+    const initState = await this.createInitInstance();
     const { exports } = initState;
     if (typeof exports.start === 'function') {
       (exports.start as () => void)();
@@ -99,91 +141,86 @@ export class CleanNodeServer {
       (exports._start as () => void)();
     }
 
-    // Setup catch-all route handler
+    if (this.config.verbose) {
+      log.info({ routes: this.routeRegistry.getRoutes().length }, 'Routes registered');
+      for (const route of this.routeRegistry.getRoutes()) {
+        log.debug({ method: route.method, pattern: route.pattern, handler: route.handlerIndex, protected: route.isProtected }, 'route');
+      }
+    }
+
+    // Health check — before catch-all.
+    this.app.get('/health', (_req: Request, res: Response) => {
+      const pool = this.requestPool;
+      res.json({
+        status: 'ok',
+        uptime: process.uptime(),
+        timestamp: new Date().toISOString(),
+        workers: pool ? {
+          available: pool.availableCount,
+          inUse: pool.inUseCount,
+          queued: pool.queuedCount,
+          total: pool.totalWorkers,
+        } : undefined,
+      });
+    });
+
+    // Prometheus metrics endpoint.
+    this.app.get('/metrics', async (_req: Request, res: Response) => {
+      if (this.requestPool) {
+        workerPoolAvailable.set(this.requestPool.availableCount);
+        workerPoolInUse.set(this.requestPool.inUseCount);
+        workerPoolQueued.set(this.requestPool.queuedCount);
+        workerPoolTotal.set(this.requestPool.totalWorkers);
+      }
+      res.set('Content-Type', registry.contentType);
+      res.end(await registry.metrics());
+    });
+
     this.app.all('*', this.handleRequest.bind(this));
 
-    if (this.config.verbose) {
-      console.log(`Registered ${this.routeRegistry.getRoutes().length} routes`);
-      for (const route of this.routeRegistry.getRoutes()) {
-        console.log(`  ${route.method} ${route.pattern} -> handler_${route.handlerIndex}${route.isProtected ? ' (protected)' : ''}`);
-      }
-    }
+    const pgPoolSize = this.config.pgPoolSize ?? 20;
+    const perWorkerPg = Math.max(2, Math.floor(pgPoolSize / DEFAULT_POOL_SIZE));
+
+    this.requestPool = new RequestWorkerPool(
+      {
+        wasmPath: this.loader.getPath(),
+        config: this.config,
+        databaseUrl: this.config.databaseUrl,
+        sandboxRoot: getSandboxRoot(),
+        pgMaxConnections: perWorkerPg,
+      },
+      DEFAULT_POOL_SIZE,
+      this.sessionStore
+    );
+    await this.requestPool.initialize();
+
+    log.info({ workers: DEFAULT_POOL_SIZE, pgPerWorker: perWorkerPg }, 'Worker pool ready');
   }
 
-  /**
-   * Create a new WASM state instance for request handling
-   */
-  private async createWasmState(): Promise<WasmState> {
-    if (!this.wasmModule) {
-      throw new Error('WASM module not loaded');
-    }
+  private async createInitInstance(): Promise<WasmState> {
+    if (!this.wasmModule) throw new Error('WASM module not loaded');
 
-    // State will be set after instantiation
     let state: WasmState | null = null;
-
-    // Create bridge imports with state getter
     const imports = createBridgeImports(() => {
-      if (!state) {
-        throw new Error('WASM state not initialized');
-      }
+      if (!state) throw new Error('WASM state not initialized');
       return state;
     });
 
-    // Create instance
     state = await this.loader.createInstance(
       imports,
       this.config,
-      this.sessionStore,
+      // Init instance only calls start() for route discovery — never processes session ops.
+      this.sessionStore as import('./types').SessionStore,
       this.routeRegistry.getRoutes(),
-      this.database
+      this.database,
+      this.httpWorker ?? undefined
     );
-
     return state;
   }
 
-  /**
-   * Log per-request WASM memory stats (MEMORY_POLICY.md §9.4).
-   */
-  private logMemoryStats(state: WasmState, req: Request): void {
-    if (!this.config.verbose) return;
-
-    const stats = state.memoryStats;
-    const currentHeapPtr = this.readCurrentHeapPtr(state);
-    const currentMemorySize = state.exports.memory.buffer.byteLength;
-
-    const payload = {
-      event: 'wasm_request_memory',
-      method: req.method,
-      path: req.url,
-      initial_memory_bytes: stats.initialMemorySize,
-      peak_memory_bytes: Math.max(stats.peakMemorySize, currentMemorySize),
-      initial_heap_ptr: stats.initialHeapPtr,
-      current_heap_ptr: currentHeapPtr,
-      peak_allocation_bytes: Math.max(stats.peakAllocation, currentHeapPtr) - stats.initialHeapPtr,
-      grow_count: stats.growCount,
-      alloc_count: stats.allocCount,
-      oom_count: stats.oomCount,
-      memory_limit_bytes: this.config.memoryLimitBytes,
-    };
-
-    console.log(`[${new Date().toISOString()}] [MEM]`, JSON.stringify(payload));
-  }
-
-  private readCurrentHeapPtr(state: WasmState): number {
-    const global = (state.instance.exports as Record<string, unknown>).__heap_ptr;
-    if (global && typeof (global as WebAssembly.Global).value === 'number') {
-      return (global as WebAssembly.Global).value as number;
-    }
-    return state.memoryStats.initialHeapPtr;
-  }
-
-  /**
-   * Handle incoming HTTP request
-   */
   private async handleRequest(req: Request, res: Response): Promise<void> {
+    const startNs = process.hrtime.bigint();
     const { path, query } = parseUrl(req.url);
-
-    // Match route
     const match = this.routeRegistry.match(req.method, path);
 
     if (!match) {
@@ -195,21 +232,23 @@ export class CleanNodeServer {
     }
 
     const { route, params } = match;
+    const routeLabel = route.pattern;
 
-    // Create fresh WASM instance for this request
-    let state: WasmState;
-    try {
-      state = await this.createWasmState();
-    } catch (err) {
-      console.error('Failed to create WASM instance:', err);
-      res.status(500).json({
-        ok: false,
-        err: { code: 'INTERNAL_ERROR', message: 'Failed to initialize request handler' },
-      });
-      return;
+    // Auth check on the main thread (session store lives here).
+    if (route.isProtected) {
+      const sessionId = req.cookies?.session_id;
+      const session = sessionId ? await this.sessionStore.get(sessionId) : undefined;
+
+      if (!session) {
+        res.status(401).json({ ok: false, err: { code: 'AUTH_ERROR', message: 'Authentication required' } });
+        return;
+      }
+      if (route.requiredRole && session.role !== route.requiredRole) {
+        res.status(403).json({ ok: false, err: { code: 'PERMISSION_DENIED', message: `Role '${route.requiredRole}' required` } });
+        return;
+      }
     }
 
-    // Build request context
     const context: RequestContext = {
       method: req.method,
       path,
@@ -221,159 +260,110 @@ export class CleanNodeServer {
       sessionId: req.cookies?.session_id,
     };
 
-    // Set context on state
-    setRequestContext(state, context);
-
-    // Check authentication for protected routes
-    if (route.isProtected) {
-      const session = context.sessionId
-        ? this.sessionStore.get(context.sessionId)
-        : undefined;
-
-      if (!session) {
-        res.status(401).json({
-          ok: false,
-          err: { code: 'AUTH_ERROR', message: 'Authentication required' },
-        });
-        return;
-      }
-
-      if (route.requiredRole && session.role !== route.requiredRole) {
-        res.status(403).json({
-          ok: false,
-          err: { code: 'PERMISSION_DENIED', message: `Role '${route.requiredRole}' required` },
-        });
-        return;
-      }
+    if (!this.requestPool) {
+      res.status(503).json({ ok: false, err: { code: 'NOT_READY', message: 'Worker pool not initialized' } });
+      return;
     }
 
-    // Call handler
+    this.inflightCount++;
     try {
-      const handlerName = `__route_handler_${route.handlerIndex}`;
-      const handler = state.exports[handlerName];
+      const result = await this.requestPool.dispatch(context, route.handlerIndex);
 
-      if (typeof handler !== 'function') {
-        throw new Error(`Handler function not found: ${handlerName}`);
+      for (const cookie of result.cookies) {
+        res.cookie(cookie.name, cookie.value, (cookie.options ?? {}) as Record<string, unknown>);
+      }
+      for (const [name, value] of Object.entries(result.headers)) {
+        if (name.toLowerCase() === 'content-type') res.type(value);
+        else res.setHeader(name, value);
       }
 
-      // Call the handler - it may return a pointer to response string
-      const resultPtr = (handler as () => number)();
+      res.status(result.status).send(result.body);
 
-      // If handler returns a pointer, read the response body from it
-      if (resultPtr > 0) {
-        const responseBody = readLengthPrefixedString(state.exports.memory, resultPtr);
-        if (responseBody) {
-          state.response.body = responseBody;
-        }
-      }
-
-      // Auto-detect Content-Type if still default and body looks like HTML
-      const body = state.response.body;
-      if (
-        state.response.headers['Content-Type'] === 'application/json' &&
-        body &&
-        (body.trimStart().startsWith('<!DOCTYPE') ||
-         body.trimStart().startsWith('<html') ||
-         body.trimStart().startsWith('<HTML'))
-      ) {
-        state.response.headers['Content-Type'] = 'text/html; charset=utf-8';
-      }
-
-      // If CSS was injected and the response is HTML, inject a <style> block before </head>
-      if (
-        state.injectedCss?.length &&
-        state.response.headers['Content-Type']?.includes('text/html')
-      ) {
-        const cssBlock = `<style>${state.injectedCss.join('\n')}</style>`;
-        state.response.body = state.response.body.replace('</head>', `${cssBlock}\n</head>`);
-      }
-
-      // Get response from state
-      const response = getResponse(state);
-
-      // Set cookies
-      if (response.cookies) {
-        for (const cookie of response.cookies) {
-          res.cookie(cookie.name, cookie.value, cookie.options || {});
-        }
-      }
-
-      // Set headers
-      for (const [name, value] of Object.entries(response.headers)) {
-        if (name.toLowerCase() === 'content-type') {
-          res.type(value);
-        } else {
-          res.setHeader(name, value);
-        }
-      }
-
-      // Send response
-      res.status(response.status).send(response.body);
+      const durationSec = Number(process.hrtime.bigint() - startNs) / 1e9;
+      httpRequestsTotal.inc({ method: req.method, route: routeLabel, status_code: result.status });
+      httpRequestDuration.observe({ method: req.method, route: routeLabel }, durationSec);
     } catch (err) {
-      console.error('Handler error:', err);
-      res.status(500).json({
+      const msg = err instanceof Error ? err.message : 'Unknown error';
+      const isTimeout = msg.includes('timed out');
+      const isOverload = msg.includes('queue full');
+      const status = isTimeout || isOverload ? 503 : 500;
+
+      res.status(status).json({
         ok: false,
-        err: {
-          code: 'INTERNAL_ERROR',
-          message: err instanceof Error ? err.message : 'Unknown error',
-        },
+        err: { code: isTimeout ? 'TIMEOUT' : isOverload ? 'OVERLOADED' : 'INTERNAL_ERROR', message: msg },
       });
+
+      httpRequestsTotal.inc({ method: req.method, route: routeLabel, status_code: status });
     } finally {
-      this.logMemoryStats(state, req);
+      this.inflightCount--;
     }
   }
 
-  /**
-   * Normalize request headers to lowercase keys
-   */
+  async gracefulShutdown(timeoutMs = 30000): Promise<void> {
+    const log = getLogger();
+    this.httpServer?.close();
+    const deadline = Date.now() + timeoutMs;
+    while (this.inflightCount > 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    if (this.inflightCount > 0) {
+      log.warn({ inflightCount: this.inflightCount }, 'Forcing shutdown with requests still in-flight');
+    }
+    await this.requestPool?.close();
+    this.httpWorker?.close();
+  }
+
   private normalizeHeaders(headers: Request['headers']): Record<string, string> {
-    const normalized: Record<string, string> = {};
-
-    for (const [key, value] of Object.entries(headers)) {
-      if (typeof value === 'string') {
-        normalized[key.toLowerCase()] = value;
-      } else if (Array.isArray(value)) {
-        normalized[key.toLowerCase()] = value.join(', ');
-      }
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(headers)) {
+      if (typeof v === 'string') out[k.toLowerCase()] = v;
+      else if (Array.isArray(v)) out[k.toLowerCase()] = v.join(', ');
     }
-
-    return normalized;
+    return out;
   }
 
-  /**
-   * Get request body as string
-   */
   private getRequestBody(req: Request): string {
-    if (typeof req.body === 'string') {
-      return req.body;
-    }
-
-    if (req.body && typeof req.body === 'object') {
-      return JSON.stringify(req.body);
-    }
-
+    if (typeof req.body === 'string') return req.body;
+    if (req.body && typeof req.body === 'object') return JSON.stringify(req.body);
     return '';
   }
 
-  /**
-   * Start the HTTP server
-   */
   start(port?: number): Promise<void> {
     const listenPort = port || getConfiguredPort() || this.config.port;
     const host = this.config.host;
 
-    return new Promise((resolve) => {
-      this.app.listen(listenPort, host, () => {
-        console.log(`Clean Node Server listening on http://${host}:${listenPort}`);
+    return new Promise((resolve, reject) => {
+      if (this.config.tlsCert && this.config.tlsKey) {
+        let cert: Buffer, key: Buffer;
+        try {
+          cert = fs.readFileSync(this.config.tlsCert);
+          key = fs.readFileSync(this.config.tlsKey);
+        } catch (err) {
+          reject(new Error(`Failed to read TLS files: ${(err as Error).message}`));
+          return;
+        }
+        this.httpServer = https.createServer({ cert, key }, this.app);
+      } else {
+        this.httpServer = http.createServer(this.app);
+      }
+
+      // Keep-alive tuning: prevents "socket hang up" errors from load balancers
+      // that hold connections open longer than Node's default 5s timeout.
+      this.httpServer.keepAliveTimeout = 65_000;
+      (this.httpServer as http.Server).headersTimeout = 66_000;
+
+      const protocol = this.config.tlsCert ? 'https' : 'http';
+      this.httpServer.listen(listenPort, host, () => {
+        const log = getLogger();
+        log.info({ protocol, host, port: listenPort }, 'Clean Node Server listening');
         resolve();
       });
+      this.httpServer.on('error', reject);
     });
   }
 
-  /**
-   * Get the Express app (for testing)
-   */
   getApp(): express.Application {
     return this.app;
   }
 }
+

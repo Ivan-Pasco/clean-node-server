@@ -17,6 +17,13 @@ export function setSandboxRoot(root: string): void {
 }
 
 /**
+ * Get the current sandbox root directory
+ */
+export function getSandboxRoot(): string {
+  return sandboxRoot;
+}
+
+/**
  * Resolve a path within the sandbox
  * Prevents directory traversal attacks
  */

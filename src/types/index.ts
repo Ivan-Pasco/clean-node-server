@@ -114,6 +114,12 @@ export interface DatabaseDriver {
   commit(txId: string): Promise<void>;
   rollback(txId: string): Promise<void>;
   close(): Promise<void>;
+  // Optional synchronous methods for drivers that support them (e.g. SQLite via better-sqlite3)
+  querySync?(sql: string, params: unknown[]): DbResult;
+  executeSync?(sql: string, params: unknown[]): number;
+  beginTransactionSync?(): string;
+  commitSync?(txId: string): void;
+  rollbackSync?(txId: string): void;
 }
 
 /**
@@ -127,6 +133,12 @@ export interface ServerConfig {
   sessionSecret: string;
   jwtSecret: string;
   memoryLimitBytes?: number;
+  tlsCert?: string;
+  tlsKey?: string;
+  rateLimitMax?: number;
+  rateLimitWindowMs?: number;
+  corsOrigin?: string;
+  pgPoolSize?: number;
 }
 
 /**
@@ -157,10 +169,12 @@ export interface WasmState {
   injectedCss?: string[];
   projectRoot?: string;
   memoryStats: MemoryStats;
+  httpClient: HttpClientState;
+  httpWorker?: SyncHttpWorker;
 }
 
 /**
- * Session store interface
+ * Session store interface (synchronous — InMemorySessionStore)
  */
 export interface SessionStore {
   create(data: Omit<SessionData, 'createdAt' | 'expiresAt'>, ttlSeconds?: number): string;
@@ -174,10 +188,71 @@ export interface SessionStore {
 }
 
 /**
+ * Unified session store type that accepts both sync (in-memory) and async (Redis) stores.
+ * Each method returns `T | Promise<T>` so callers can `await` safely regardless of implementation.
+ */
+export interface AnySessionStore {
+  create(data: Omit<SessionData, 'createdAt' | 'expiresAt'>, ttlSeconds?: number): string | Promise<string>;
+  get(sessionId: string): SessionData | undefined | Promise<SessionData | undefined>;
+  destroy(sessionId: string): boolean | Promise<boolean>;
+  cleanup(): void | Promise<void>;
+  close(): void | Promise<void>;
+  storeValue?(sessionId: string, key: string, value: string): boolean | Promise<boolean>;
+  getValue?(sessionId: string, key: string): string | undefined | Promise<string | undefined>;
+  deleteValue?(sessionId: string, key: string): boolean | Promise<boolean>;
+  hasKey?(sessionId: string, key: string): boolean | Promise<boolean>;
+}
+
+/**
  * HTTP client response
  */
 export interface HttpClientResponse {
   status: number;
   headers: Record<string, string>;
   body: string;
+}
+
+/**
+ * Per-instance HTTP client configuration and state
+ */
+export interface HttpClientState {
+  timeout: number;
+  userAgent: string | null;
+  maxRedirects: number;
+  cookiesEnabled: boolean;
+  cookieJar: Map<string, string>;
+  lastResponse: HttpClientResponse | null;
+}
+
+/**
+ * Request payload sent to HTTP worker thread
+ */
+export interface HttpWorkerRequest {
+  method: string;
+  url: string;
+  body?: string;
+  headers?: Record<string, string>;
+  timeout: number;
+  maxRedirects: number;
+  cookiesEnabled: boolean;
+  cookies: Record<string, string>;
+}
+
+/**
+ * Response received from HTTP worker thread
+ */
+export interface HttpWorkerResponse {
+  ok: boolean;
+  status: number;
+  headers: Record<string, string>;
+  body: string;
+  updatedCookies: Record<string, string>;
+}
+
+/**
+ * Synchronous HTTP worker interface (backed by a worker thread)
+ */
+export interface SyncHttpWorker {
+  request(opts: HttpWorkerRequest): HttpWorkerResponse;
+  close(): void;
 }

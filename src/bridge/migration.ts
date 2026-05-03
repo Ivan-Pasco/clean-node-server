@@ -32,7 +32,7 @@ function detectEngine(state: WasmState): 'postgres' | 'sqlite' | 'unknown' {
 
   const ctor = state.database.constructor?.name ?? '';
 
-  if (ctor === 'PostgresDriver') {
+  if (ctor === 'PostgresDriver' || ctor === 'SyncPostgresDriver') {
     return 'postgres';
   }
 

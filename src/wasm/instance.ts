@@ -7,6 +7,7 @@ import {
   SessionStore,
   RouteHandler,
   DatabaseDriver,
+  SyncHttpWorker,
 } from '../types';
 import { createWasmState } from './state';
 
@@ -55,10 +56,11 @@ export async function createWasmInstance(
   config: ServerConfig,
   sessionStore: SessionStore,
   routeRegistry: RouteHandler[],
-  database?: DatabaseDriver
+  database?: DatabaseDriver,
+  httpWorker?: SyncHttpWorker
 ): Promise<WasmState> {
   const instance = await instantiateWasm(module, imports);
-  return createWasmState(instance, config, sessionStore, routeRegistry, database);
+  return createWasmState(instance, config, sessionStore, routeRegistry, database, httpWorker);
 }
 
 /**
@@ -156,10 +158,11 @@ export class WasmLoader {
     config: ServerConfig,
     sessionStore: SessionStore,
     routeRegistry: RouteHandler[],
-    database?: DatabaseDriver
+    database?: DatabaseDriver,
+    httpWorker?: SyncHttpWorker
   ): Promise<WasmState> {
     const module = await this.load();
-    return createWasmInstance(module, imports, config, sessionStore, routeRegistry, database);
+    return createWasmInstance(module, imports, config, sessionStore, routeRegistry, database, httpWorker);
   }
 
   /**

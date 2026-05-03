@@ -82,5 +82,23 @@ export function createConsoleBridge(getState: () => WasmState) {
         console.log(`[DEBUG] ${str}`);
       }
     },
+
+    console_log(ptr: number, len: number): void {
+      const state = getState();
+      const str = readString(state, ptr, len);
+      console.log(str);
+    },
+
+    console_error(ptr: number, len: number): void {
+      const state = getState();
+      const str = readString(state, ptr, len);
+      console.error(str);
+    },
+
+    console_warn(ptr: number, len: number): void {
+      const state = getState();
+      const str = readString(state, ptr, len);
+      console.warn(str);
+    },
   };
 }

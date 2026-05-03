@@ -8,6 +8,7 @@ import {
   RouteHandler,
   DatabaseDriver,
   MemoryStats,
+  SyncHttpWorker,
 } from '../types';
 
 /**
@@ -90,7 +91,8 @@ export function createWasmState(
   config: ServerConfig,
   sessionStore: SessionStore,
   routeRegistry: RouteHandler[],
-  database?: DatabaseDriver
+  database?: DatabaseDriver,
+  httpWorker?: SyncHttpWorker
 ): WasmState {
   const exports = instance.exports as unknown as WasmExports;
 
@@ -127,6 +129,15 @@ export function createWasmState(
     routeRegistry,
     database,
     memoryStats,
+    httpClient: {
+      timeout: 30000,
+      userAgent: null,
+      maxRedirects: 5,
+      cookiesEnabled: false,
+      cookieJar: new Map(),
+      lastResponse: null,
+    },
+    httpWorker,
   };
 }
 

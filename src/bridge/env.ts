@@ -1,19 +1,34 @@
 import { WasmState } from '../types';
 import { readString, writeString } from './helpers';
 
+const BLOCKED_ENV_VARS = new Set([
+  'AWS_SECRET_ACCESS_KEY',
+  'AWS_SESSION_TOKEN',
+  'PRIVATE_KEY',
+  'ENCRYPTION_KEY',
+  'SSH_AUTH_SOCK',
+  'GPG_PASSPHRASE',
+]);
+
+const VALID_ENV_NAME = /^[A-Za-z0-9_.]+$/;
+
 /**
  * Create environment variable bridge functions
  */
 export function createEnvBridge(getState: () => WasmState) {
   return {
     /**
-     * Get environment variable value
+     * Get environment variable value.
+     * Validates name format and blocks known sensitive variable names.
      *
-     * @returns Pointer to value string or empty if not set
+     * @returns Pointer to value string or empty if not set/blocked
      */
     _env_get(namePtr: number, nameLen: number): number {
       const state = getState();
       const name = readString(state, namePtr, nameLen);
+      if (!VALID_ENV_NAME.test(name) || BLOCKED_ENV_VARS.has(name.toUpperCase())) {
+        return writeString(state, '');
+      }
       const value = process.env[name] || '';
       return writeString(state, value);
     },
