@@ -1,7 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx tsc *)"
+      "Bash(npx tsc *)",
+      "Bash(echo \"EXIT CODE: $?\")",
+      "Bash(grep -E \"^\\\\| \\\\`\")",
+      "Bash(awk -F'`' '{print $2}')",
+      "Bash(cln dev-queue *)"
     ]
   }
 }

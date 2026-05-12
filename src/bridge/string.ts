@@ -448,5 +448,22 @@ export function createStringBridge(getState: () => WasmState) {
       const str = readString(state, ptr, len);
       return str.trim().length === 0 ? 1 : 0;
     },
+
+    _html_escape(ptr: number, len: number): number {
+      const state = getState();
+      const str = readString(state, ptr, len);
+      const escaped = str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+      return writeString(state, escaped);
+    },
+
+    _html_raw(ptr: number, len: number): number {
+      const state = getState();
+      return writeString(state, readString(state, ptr, len));
+    },
   };
 }
