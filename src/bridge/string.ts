@@ -1,5 +1,5 @@
 import { WasmState } from '../types';
-import { readString, writeString } from './helpers';
+import { readString, readPrefixedString, writeString } from './helpers';
 
 /**
  * Create string bridge functions
@@ -9,18 +9,19 @@ import { readString, writeString } from './helpers';
 export function createStringBridge(getState: () => WasmState) {
   return {
     /**
-     * Concatenate two strings
+     * Concatenate two strings.
+     * ABI: LP-pointer convention — WASM calls this directly with one i32 per string
+     * (a pointer to [4-byte LE length][UTF-8 content]). No compiler wrapper unpacks
+     * these into ptr+len pairs, so do NOT use (ptr, len, ptr, len) signatures here.
      */
-    string_concat(
-      ptr1: number,
-      len1: number,
-      ptr2: number,
-      len2: number
-    ): number {
+    'string.concat'(lpA: number, lpB: number): number {
       const state = getState();
-      const str1 = readString(state, ptr1, len1);
-      const str2 = readString(state, ptr2, len2);
-      return writeString(state, str1 + str2);
+      return writeString(state, readPrefixedString(state, lpA) + readPrefixedString(state, lpB));
+    },
+
+    string_concat(lpA: number, lpB: number): number {
+      const state = getState();
+      return writeString(state, readPrefixedString(state, lpA) + readPrefixedString(state, lpB));
     },
 
     /**
@@ -94,18 +95,12 @@ export function createStringBridge(getState: () => WasmState) {
     /**
      * Replace all occurrences of a pattern
      */
-    string_replace(
-      ptr: number,
-      len: number,
-      patternPtr: number,
-      patternLen: number,
-      replacementPtr: number,
-      replacementLen: number
-    ): number {
+    // LP-pointer convention: one i32 LP-pointer per argument (no compiler wrapper)
+    string_replace(lpSubject: number, lpPattern: number, lpReplacement: number): number {
       const state = getState();
-      const str = readString(state, ptr, len);
-      const pattern = readString(state, patternPtr, patternLen);
-      const replacement = readString(state, replacementPtr, replacementLen);
+      const str = readPrefixedString(state, lpSubject);
+      const pattern = readPrefixedString(state, lpPattern);
+      const replacement = readPrefixedString(state, lpReplacement);
       return writeString(state, str.split(pattern).join(replacement));
     },
 
@@ -130,17 +125,12 @@ export function createStringBridge(getState: () => WasmState) {
     /**
      * Split string by delimiter (returns JSON array)
      */
-    string_split(
-      ptr: number,
-      len: number,
-      delimPtr: number,
-      delimLen: number
-    ): number {
+    // LP-pointer convention: one i32 LP-pointer per argument (no compiler wrapper)
+    string_split(lpStr: number, lpDelim: number): number {
       const state = getState();
-      const str = readString(state, ptr, len);
-      const delim = readString(state, delimPtr, delimLen);
-      const parts = str.split(delim);
-      return writeString(state, JSON.stringify(parts));
+      const str = readPrefixedString(state, lpStr);
+      const delim = readPrefixedString(state, lpDelim);
+      return writeString(state, JSON.stringify(str.split(delim)));
     },
 
     /**
@@ -389,16 +379,11 @@ export function createStringBridge(getState: () => WasmState) {
     /**
      * Compare two strings (returns -1, 0, or 1)
      */
-    string_compare(
-      ptr1: number,
-      len1: number,
-      ptr2: number,
-      len2: number
-    ): number {
+    // LP-pointer convention: one i32 LP-pointer per argument (no compiler wrapper).
+    // Note: returns 1 for equal, 0 for different (not localeCompare's -1/0/1).
+    string_compare(lpA: number, lpB: number): number {
       const state = getState();
-      const str1 = readString(state, ptr1, len1);
-      const str2 = readString(state, ptr2, len2);
-      return str1.localeCompare(str2);
+      return readPrefixedString(state, lpA) === readPrefixedString(state, lpB) ? 1 : 0;
     },
 
     /**
