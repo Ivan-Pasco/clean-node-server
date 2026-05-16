@@ -82,14 +82,14 @@ export function callStart(state: WasmState): void {
  * Call a handler function by index
  */
 export function callHandler(state: WasmState, handlerIndex: number): number {
-  const handlerName = `__handler_${handlerIndex}`;
-  const handler = state.exports[handlerName];
-
-  if (typeof handler !== 'function') {
-    throw new Error(`Handler function not found: ${handlerName}`);
+  const table = (state.exports as unknown as Record<string, unknown>).__indirect_function_table as WebAssembly.Table | undefined;
+  if (!table) {
+    throw new Error('WASM module does not export __indirect_function_table — cannot dispatch route handlers');
   }
-
-  // Call handler and get pointer to response string
+  const handler = table.get(handlerIndex);
+  if (typeof handler !== 'function') {
+    throw new Error(`No function at table index ${handlerIndex}`);
+  }
   return (handler as () => number)();
 }
 
