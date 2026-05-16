@@ -128,14 +128,14 @@ program
       await server.initialize();
       await server.start(config.port);
 
-      const forceExit = setTimeout(() => {
-        console.error('[shutdown] Forced exit after 35s timeout');
-        process.exit(1);
-      }, 35000);
-      forceExit.unref();
-
       const shutdown = async () => {
         log.info('Shutting down...');
+        // Start the force-exit watchdog only once shutdown begins, not at startup.
+        const forceExit = setTimeout(() => {
+          console.error('[shutdown] Forced exit after 35s timeout');
+          process.exit(1);
+        }, 35000);
+        forceExit.unref();
         await server.gracefulShutdown(30000);
         if (database) await database.close();
         await sessionStore.close();

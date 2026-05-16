@@ -11,15 +11,17 @@ import { WasmExports } from '../types';
 export function readLengthPrefixedString(memory: WebAssembly.Memory, ptr: number): string {
   if (ptr === 0) return '';
 
-  const view = new DataView(memory.buffer);
+  // Snap buffer once so all reads see a consistent view.
+  const buffer = memory.buffer;
+  const view = new DataView(buffer);
   const len = view.getUint32(ptr, true); // little-endian
 
   if (len === 0) return '';
-  if (len > memory.buffer.byteLength - ptr - 4) {
-    throw new Error(`Invalid string length: ${len} at ptr ${ptr}`);
+  if (ptr + 4 + len > buffer.byteLength) {
+    throw new Error(`Invalid string length: ${len} at ptr ${ptr} (buffer ${buffer.byteLength})`);
   }
 
-  const bytes = new Uint8Array(memory.buffer, ptr + 4, len);
+  const bytes = new Uint8Array(buffer, ptr + 4, len);
   return new TextDecoder('utf-8').decode(bytes);
 }
 
@@ -35,11 +37,13 @@ export function readLengthPrefixedString(memory: WebAssembly.Memory, ptr: number
 export function readRawString(memory: WebAssembly.Memory, ptr: number, len: number): string {
   if (ptr === 0 || len === 0) return '';
 
-  if (ptr + len > memory.buffer.byteLength) {
-    throw new Error(`String read out of bounds: ptr=${ptr}, len=${len}, bufferSize=${memory.buffer.byteLength}`);
+  // Snap buffer once so the bounds check and the read use the same backing buffer.
+  const buffer = memory.buffer;
+  if (ptr + len > buffer.byteLength) {
+    throw new Error(`String read out of bounds: ptr=${ptr}, len=${len}, bufferSize=${buffer.byteLength}`);
   }
 
-  const bytes = new Uint8Array(memory.buffer, ptr, len);
+  const bytes = new Uint8Array(buffer, ptr, len);
   return new TextDecoder('utf-8').decode(bytes);
 }
 
@@ -61,11 +65,12 @@ export function writeLengthPrefixedString(exports: WasmExports, str: string): nu
     throw new Error('WASM malloc returned null pointer');
   }
 
-  const view = new DataView(exports.memory.buffer);
+  // Snap buffer AFTER malloc — malloc may have grown WASM memory, which detaches
+  // the previous ArrayBuffer and creates a new one. All writes must use this snapshot.
+  const buffer = exports.memory.buffer;
+  const view = new DataView(buffer);
   view.setUint32(ptr, bytes.length, true); // little-endian length prefix
-
-  const memoryArray = new Uint8Array(exports.memory.buffer);
-  memoryArray.set(bytes, ptr + 4);
+  new Uint8Array(buffer).set(bytes, ptr + 4);
 
   return ptr;
 }
