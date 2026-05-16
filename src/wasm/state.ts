@@ -48,39 +48,46 @@ function readInitialHeapPtr(instance: WebAssembly.Instance): number {
 function wrapMalloc(exports: WasmExports, stats: MemoryStats, config: ServerConfig): void {
   const originalMalloc = exports.malloc;
 
-  exports.malloc = (size: number): number => {
-    const beforeBytes = exports.memory.buffer.byteLength;
+  // Object.create shadows the prototype but [[Set]] still throws when the
+  // prototype property is non-writable. Object.defineProperty creates an OWN
+  // property on the shadow object directly, bypassing the prototype chain check.
+  Object.defineProperty(exports, 'malloc', {
+    value: (size: number): number => {
+      const beforeBytes = exports.memory.buffer.byteLength;
 
-    if (config.memoryLimitBytes !== undefined && beforeBytes + size > config.memoryLimitBytes) {
-      stats.oomCount++;
-      if (config.verbose) {
-        const ts = new Date().toISOString();
-        console.warn(
-          `[${ts}] [MEM] allocation of ${size} bytes denied: would exceed limit ${config.memoryLimitBytes} (current ${beforeBytes})`
-        );
+      if (config.memoryLimitBytes !== undefined && beforeBytes + size > config.memoryLimitBytes) {
+        stats.oomCount++;
+        if (config.verbose) {
+          const ts = new Date().toISOString();
+          console.warn(
+            `[${ts}] [MEM] allocation of ${size} bytes denied: would exceed limit ${config.memoryLimitBytes} (current ${beforeBytes})`
+          );
+        }
+        return 0;
       }
-      return 0;
-    }
 
-    const ptr = originalMalloc(size);
-    const afterBytes = exports.memory.buffer.byteLength;
+      const ptr = originalMalloc(size);
+      const afterBytes = exports.memory.buffer.byteLength;
 
-    if (afterBytes > beforeBytes) {
-      stats.growCount++;
-    }
-    if (afterBytes > stats.peakMemorySize) {
-      stats.peakMemorySize = afterBytes;
-    }
-    if (ptr > 0) {
-      stats.allocCount++;
-      const top = ptr + size;
-      if (top > stats.peakAllocation) {
-        stats.peakAllocation = top;
+      if (afterBytes > beforeBytes) {
+        stats.growCount++;
       }
-    }
+      if (afterBytes > stats.peakMemorySize) {
+        stats.peakMemorySize = afterBytes;
+      }
+      if (ptr > 0) {
+        stats.allocCount++;
+        const top = ptr + size;
+        if (top > stats.peakAllocation) {
+          stats.peakAllocation = top;
+        }
+      }
 
-    return ptr;
-  };
+      return ptr;
+    },
+    writable: true,
+    configurable: true,
+  });
 }
 
 /**
@@ -95,7 +102,7 @@ export function createWasmState(
   httpWorker?: SyncHttpWorker
 ): WasmState {
   // Node.js v22 enforces WASM exports as non-writable (per spec). Shadow the
-  // exports object so wrapMalloc can assign its wrapper as an own property
+  // exports object so wrapMalloc can install its wrapper via Object.defineProperty
   // while all other exports remain accessible via the prototype chain.
   const exports = Object.create(instance.exports) as unknown as WasmExports;
 
