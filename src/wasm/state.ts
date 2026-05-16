@@ -94,7 +94,10 @@ export function createWasmState(
   database?: DatabaseDriver,
   httpWorker?: SyncHttpWorker
 ): WasmState {
-  const exports = instance.exports as unknown as WasmExports;
+  // Node.js v22 enforces WASM exports as non-writable (per spec). Shadow the
+  // exports object so wrapMalloc can assign its wrapper as an own property
+  // while all other exports remain accessible via the prototype chain.
+  const exports = Object.create(instance.exports) as unknown as WasmExports;
 
   if (!exports.memory) {
     throw new Error('WASM module must export memory');
