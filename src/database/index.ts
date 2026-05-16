@@ -25,6 +25,12 @@ export async function createDatabaseDriver(url: string, maxConnections?: number)
       return new SqliteDriver(dbPath);
     }
 
+    case 'mysql':
+    case 'mysql2': {
+      const { SyncMysqlDriver } = await import('./mysql');
+      return new SyncMysqlDriver(url, maxConnections);
+    }
+
     default:
       throw new Error(`Unsupported database protocol: ${protocol}`);
   }

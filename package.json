@@ -1,6 +1,6 @@
 {
   "name": "@ivan-pasco/clean-node-server",
-  "version": "0.1.10",
+  "version": "0.1.11",
   "description": "Node.js host bridge for Clean Language WASM modules",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -52,6 +52,7 @@
     "express-rate-limit": "^8.4.1",
     "ioredis": "^5.10.1",
     "jsonwebtoken": "^9.0.2",
+    "mysql2": "^3.9.0",
     "pg": "^8.11.3",
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
