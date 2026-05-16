@@ -126,7 +126,7 @@ program
 
       log.info('Loading WASM module...');
       await server.initialize();
-      await server.start();
+      await server.start(config.port);
 
       const forceExit = setTimeout(() => {
         console.error('[shutdown] Forced exit after 35s timeout');
