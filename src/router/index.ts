@@ -5,6 +5,7 @@ import { RouteHandler } from '../types';
  */
 export class RouteRegistry {
   private routes: RouteHandler[] = [];
+  private registrationCounter = 0;
 
   /**
    * Register a new route
@@ -12,11 +13,15 @@ export class RouteRegistry {
   register(
     method: string,
     pattern: string,
-    handlerIndex: number,
+    _wasmTableIndex: number,
     isProtected: boolean = false,
     requiredRole?: string
   ): void {
     const { regex, paramNames } = this.compilePattern(pattern);
+    // The compiler exports handlers as __route_handler_0, __route_handler_1, ...
+    // in registration order. Use the sequential counter as the dispatch index,
+    // not the raw WASM function-table offset.
+    const handlerIndex = this.registrationCounter++;
 
     this.routes.push({
       method: method.toUpperCase(),
