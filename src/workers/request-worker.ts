@@ -6,7 +6,7 @@ import { createDatabaseDriver } from '../database';
 import { setSandboxRoot } from '../bridge/file';
 import { SyncHttpClient } from '../bridge/http-client';
 import { setRequestContext, getResponse } from '../wasm/state';
-import { readLengthPrefixedString } from '../wasm/memory';
+import { readLengthPrefixedString, preGrowMemory } from '../wasm/memory';
 import { RouteRegistry } from '../router';
 import { setRouteRegistry } from '../bridge/http-server';
 import { WasmState, DatabaseDriver } from '../types';
@@ -98,6 +98,8 @@ async function initialize(): Promise<void> {
   wasmState = state;
 
   const { exports } = state;
+  preGrowMemory(exports, config.preGrowMemoryBytes);
+
   if (typeof exports.start === 'function') {
     (exports.start as () => void)();
   } else if (typeof exports._start === 'function') {

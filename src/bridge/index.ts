@@ -18,7 +18,7 @@ import { createInputBridge } from './input';
 import { createArrayBridge } from './array';
 import { createListBridge } from './list';
 import { createMigrationBridge } from './migration';
-import { createUiBridge } from './ui';
+import { createUiBridge, createUiClientStubs } from './ui';
 import { readString, writeString } from './helpers';
 
 /**
@@ -48,6 +48,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const listBridge = createListBridge(getState);
   const migrationBridge = createMigrationBridge(getState);
   const uiBridge = createUiBridge(getState);
+  const uiClientStubs = createUiClientStubs();
 
   // Assemble into WASM import object
   // Functions are organized by module namespace
@@ -324,9 +325,13 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _db_rollback_migration: migrationBridge._db_rollback_migration,
       _db_migration_status: migrationBridge._db_migration_status,
 
-      // UI functions
+      // UI server functions (implemented)
       _ui_loadLayout: uiBridge._ui_loadLayout,
       _ui_injectHeadCss: uiBridge._ui_injectHeadCss,
+
+      // UI client-side no-op stubs (frame.ui declares these as WASM imports even
+      // in server builds; stubs satisfy the linker — they are never called at runtime)
+      ...uiClientStubs,
 
       // Memory management stubs
       __stack_pointer: new WebAssembly.Global(
@@ -356,4 +361,4 @@ export { createInputBridge } from './input';
 export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
 export { createListBridge, getListStore, resetListStore } from './list';
 export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
-export { createUiBridge } from './ui';
+export { createUiBridge, createUiClientStubs } from './ui';

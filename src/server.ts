@@ -21,7 +21,7 @@ import { setRequestContext, getResponse } from './wasm/state';
 import { RouteRegistry, parseUrl } from './router';
 import { createBridgeImports } from './bridge';
 import { getRouteRegistry, setRouteRegistry, getConfiguredPort } from './bridge/http-server';
-import { readLengthPrefixedString } from './wasm/memory';
+import { readLengthPrefixedString, preGrowMemory } from './wasm/memory';
 import { getSandboxRoot } from './bridge/file';
 import { SyncHttpClient } from './bridge/http-client';
 import { RequestWorkerPool } from './workers/request-pool';
@@ -135,6 +135,9 @@ export class CleanNodeServer {
 
     const initState = await this.createInitInstance();
     const { exports } = initState;
+
+    preGrowMemory(exports, this.config.preGrowMemoryBytes);
+
     if (typeof exports.start === 'function') {
       (exports.start as () => void)();
     } else if (typeof exports._start === 'function') {

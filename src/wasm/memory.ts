@@ -1,5 +1,8 @@
 import { WasmExports } from '../types';
 
+const WASM_PAGE_BYTES = 65_536;
+const DEFAULT_PREGROW_BYTES = 16 * 1024 * 1024; // 16 MB
+
 /**
  * Read a length-prefixed string from WASM memory
  * Format: [4-byte LE length][UTF-8 bytes]
@@ -132,4 +135,32 @@ export function writeF64(memory: WebAssembly.Memory, ptr: number, value: number)
  */
 export function getStringByteLength(str: string): number {
   return new TextEncoder().encode(str).length;
+}
+
+/**
+ * Pre-grow WASM memory to at least `targetBytes` before the first request.
+ *
+ * Why: when the WASM bump allocator exhausts the current memory and calls
+ * memory.grow() mid-request, the old ArrayBuffer is detached. Any DataView or
+ * TypedArray created from the pre-grow buffer raises "Offset is outside the
+ * bounds of the DataView" if it is accessed after the grow. Pre-growing at
+ * startup ensures all subsequent allocations fit within the initial buffer and
+ * memory.grow() is never triggered during request handling.
+ *
+ * Silently skips if the WASM module declares a max memory smaller than
+ * `targetBytes` (grow() would throw; the server continues with available memory).
+ */
+export function preGrowMemory(
+  exports: WasmExports,
+  targetBytes: number = DEFAULT_PREGROW_BYTES
+): void {
+  const currentBytes = exports.memory.buffer.byteLength;
+  if (currentBytes >= targetBytes) return;
+
+  const pagesNeeded = Math.ceil((targetBytes - currentBytes) / WASM_PAGE_BYTES);
+  try {
+    exports.memory.grow(pagesNeeded);
+  } catch {
+    // Module's declared max memory is below targetBytes — non-fatal.
+  }
 }

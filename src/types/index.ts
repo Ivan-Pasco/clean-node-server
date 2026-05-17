@@ -133,6 +133,7 @@ export interface ServerConfig {
   sessionSecret: string;
   jwtSecret: string;
   memoryLimitBytes?: number;
+  preGrowMemoryBytes?: number;
   tlsCert?: string;
   tlsKey?: string;
   rateLimitMax?: number;
