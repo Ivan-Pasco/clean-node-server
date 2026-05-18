@@ -323,9 +323,6 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
 
       // Cryptography
       ...cryptoBridge,
-      // Backward-compat aliases: callers that used the old _auth_* names still work
-      _auth_hash_password: cryptoBridge._crypto_hash_password,
-      _auth_verify_password: cryptoBridge._crypto_verify_password,
 
       // Database
       ...databaseBridge,
