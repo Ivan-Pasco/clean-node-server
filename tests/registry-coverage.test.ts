@@ -1,19 +1,17 @@
 /**
  * Registry Coverage Test — Bridge vs function-registry.toml
  *
- * Verifies that every canonical name and alias declared in the shared
- * function-registry.toml is present in the env object built by
- * createBridgeImports(). Prevents silent LinkError regressions when:
- *   - A new bridge function is added to the registry but not implemented here
- *   - An alias is added to the registry but the auto-alias loop misses it
+ * Verifies that every canonical name declared in the shared function-registry.toml
+ * is present in the env object built by createBridgeImports(). Prevents silent
+ * LinkError regressions when a new bridge function is added to the registry but
+ * not implemented in the bridge.
  *
  * This test only runs when function-registry.toml is reachable (monorepo context).
  * It is skipped silently in standalone npm installs.
  *
- * The dual-naming requirement (_namespace_fn + namespace.fn) is temporary.
- * When the compiler is fixed to emit only canonical names, the auto-alias
- * loop in bridge/index.ts can be removed and the aliases column in this
- * test will become empty. The test itself remains valid either way.
+ * Aliases (dot-notation names like db.query) are no longer checked here.
+ * The compiler (v0.30.123+) emits only canonical _namespace_fn import names,
+ * so the host only needs to register canonical names.
  */
 
 import * as fs from 'fs';
@@ -104,33 +102,31 @@ describe('Bridge registry coverage', () => {
     expect(missing, `Missing canonical registrations: ${missing.join(', ')}`).toHaveLength(0);
   });
 
-  it('every alias in the registry is registered', () => {
-    const missing: string[] = [];
+  it('auto-alias derived forms of _* bridge functions are NOT in env (compiler v0.30.123+ emits canonical only)', () => {
+    // The compiler (v0.30.123+) no longer emits dot-notation aliases for bridge functions.
+    // The auto-alias derivation rule: _namespace_fn → namespace.fn (strip _, replace first _ with .)
+    // These derived dot-notation forms must NOT be separate entries in env — they were
+    // only needed when the compiler dual-emitted both forms.
+    //
+    // Note: dot-notation names that the compiler emits as PRIMARY built-in method imports
+    // (e.g. string.concat, math.sin, list.*) are still required and correctly registered.
+    // This test only guards against re-introduction of the now-removed auto-alias loop.
+    const unexpectedDerived: string[] = [];
     for (const entry of entries) {
-      // memory_runtime module functions live in a separate WASM module; skip them
       if (entry.module !== 'env') continue;
-      for (const alias of entry.aliases) {
-        if (!(alias in env)) {
-          missing.push(`${alias} (alias of ${entry.name})`);
-        }
+      // Only check canonical names that start with _ (bridge functions subject to auto-alias)
+      if (!entry.name.startsWith('_') || entry.name.startsWith('__')) continue;
+      const stripped = entry.name.slice(1);
+      const dotIdx = stripped.indexOf('_');
+      if (dotIdx === -1) continue;
+      const derivedDotKey = `${stripped.slice(0, dotIdx)}.${stripped.slice(dotIdx + 1)}`;
+      if (derivedDotKey in env) {
+        unexpectedDerived.push(`${derivedDotKey} (derived from ${entry.name})`);
       }
     }
-    expect(missing, `Missing alias registrations: ${missing.join(', ')}`).toHaveLength(0);
-  });
-
-  it('no duplicate registrations exist for the same logical function', () => {
-    // Ensure canonical and dot-notation both resolve to the same callable,
-    // not two different functions (which would indicate a copy-paste error).
-    for (const entry of entries) {
-      // memory_runtime module functions live in a separate WASM module; skip them
-      if (entry.module !== 'env') continue;
-      for (const alias of entry.aliases) {
-        if (entry.name in env && alias in env) {
-          // Both are registered — they should be the same function reference.
-          // For noop stubs this is always true; for real functions it catches drift.
-          expect(typeof env[entry.name]).toBe(typeof env[alias]);
-        }
-      }
-    }
+    expect(
+      unexpectedDerived,
+      `Auto-alias derived dot-notation forms found in env — auto-alias loop was re-added: ${unexpectedDerived.join(', ')}`
+    ).toHaveLength(0);
   });
 });

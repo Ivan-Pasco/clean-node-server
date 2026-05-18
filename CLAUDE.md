@@ -62,10 +62,17 @@ Facts about the language live in `foundation/spec/` (at the project root). Facts
 
 The spec files are the single source of truth. Component documentation explains implementation — it does not redefine language rules.
 
-## Bridge Function Naming — Dual Registration Required
+## Bridge Function Naming — Canonical Names Only (v0.30.123+)
 
-The compiler generates WASM imports in **both** `_namespace_fn` (underscore) and `namespace.fn` (dot-notation) styles. Both must be registered or the WASM linker throws a `LinkError` at instantiation.
+The compiler (v0.30.123+) emits **only** the canonical `_namespace_fn` form for each bridge function import. Dot-notation aliases (`namespace.fn`) are no longer emitted as WASM imports.
 
-`bridge/index.ts` handles this via an auto-alias loop at the end of `createBridgeImports()` — do not remove it. When adding new bridge functions that follow the `_namespace_fn` pattern, the loop covers them automatically. For functions without a leading `_` (e.g. HTTP client functions like `http_get`), add explicit dot-notation aliases manually if the compiler emits them.
+When adding a new bridge function, register only the canonical `_namespace_fn` name in `bridge/index.ts`. The auto-alias loop that previously derived `namespace.fn` from `_namespace_fn` has been removed — do not re-add it.
 
-See [`foundation/platform-architecture/HOST_BRIDGE.md § Dual Naming`](../foundation/platform-architecture/HOST_BRIDGE.md) for the full spec.
+Some dot-notation names ARE still required because the compiler emits them directly as built-in method imports (not bridge aliases):
+- `string.concat`, `string.toUpperCase`, `string.toLowerCase`, `string.toNumber`, etc.
+- `integer.toString`, `number.toString`, `boolean.toString`, `string.toInteger`, `string.toBoolean`
+- `list.*`, `math.*`
+
+These are explicitly registered in `bridge/index.ts` and must stay.
+
+See [`foundation/platform-architecture/HOST_BRIDGE.md`](../foundation/platform-architecture/HOST_BRIDGE.md) and [`foundation/platform-architecture/function-registry.toml`](../foundation/platform-architecture/function-registry.toml) for the authoritative registry.
