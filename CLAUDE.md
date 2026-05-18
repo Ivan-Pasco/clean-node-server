@@ -25,15 +25,7 @@ Instead:
 
 ### Prompt Format for Cross-Component Issues
 
-```
-Component: [target component name, e.g., clean-language-compiler]
-Issue Type: [bug/feature/enhancement/compatibility]
-Priority: [critical/high/medium/low]
-Description: [Detailed description of the issue discovered]
-Context: [Why this was discovered while working in the current component]
-Suggested Fix: [If known, describe the potential solution]
-Files Affected: [List of files in the target component that need changes]
-```
+See [`foundation/management/cross-component-prompts/README.md`](../foundation/management/cross-component-prompts/README.md) for the required header format and filename prefix convention. Use the `node-server-` prefix for issues that originated here and need to be routed back; use the correct target prefix (e.g. `server-`, `compiler-`) for issues in other components.
 
 ### Why This Rule Exists
 
@@ -65,7 +57,15 @@ Facts about the language live in `foundation/spec/` (at the project root). Facts
 
 | Change type | Update required |
 |-------------|-----------------|
-| New or changed host bridge function | `foundation/platform-architecture/HOST_BRIDGE.md` |
+| New or changed host bridge function | `foundation/platform-architecture/HOST_BRIDGE.md` + `function-registry.toml` |
 | New or changed execution layer | `foundation/platform-architecture/EXECUTION_LAYERS.md` |
 
 The spec files are the single source of truth. Component documentation explains implementation — it does not redefine language rules.
+
+## Bridge Function Naming — Dual Registration Required
+
+The compiler generates WASM imports in **both** `_namespace_fn` (underscore) and `namespace.fn` (dot-notation) styles. Both must be registered or the WASM linker throws a `LinkError` at instantiation.
+
+`bridge/index.ts` handles this via an auto-alias loop at the end of `createBridgeImports()` — do not remove it. When adding new bridge functions that follow the `_namespace_fn` pattern, the loop covers them automatically. For functions without a leading `_` (e.g. HTTP client functions like `http_get`), add explicit dot-notation aliases manually if the compiler emits them.
+
+See [`foundation/platform-architecture/HOST_BRIDGE.md § Dual Naming`](../foundation/platform-architecture/HOST_BRIDGE.md) for the full spec.
