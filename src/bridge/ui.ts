@@ -21,6 +21,11 @@ function getProjectRoot(state: WasmState): string {
 // but the linker requires all declared imports to be satisfied.
 function noop(): number { return 0; }
 
+// Converts a camelCase suffix to snake_case (e.g. "setState" → "set_state").
+function camelToSnake(s: string): string {
+  return s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
 /**
  * No-op stubs for all frame.ui client-side bridge functions.
  *
@@ -29,10 +34,14 @@ function noop(): number { return 0; }
  * runtime from server code, but the WASM linker fails if any declared import is
  * missing a callable. All stubs safely return 0 / empty pointer.
  *
+ * The compiler generates both camelCase and snake_case dot-notation variants for
+ * every bridge function. The snake_case aliases are derived automatically from the
+ * camelCase entries below — no manual listing needed, so future additions stay in sync.
+ *
  * Function list is derived from frame.ui plugin.toml [bridge] section.
  */
-export function createUiClientStubs() {
-  return {
+export function createUiClientStubs(): Record<string, () => number> {
+  const stubs: Record<string, () => number> = {
     // Component registry
     _ui_register_component: noop,
     _ui_get_component: noop,
@@ -98,11 +107,11 @@ export function createUiClientStubs() {
     // Timers
     _ui_set_timeout: noop,
 
-    // Dot-notation aliases (compiler may generate these instead of underscore names)
+    // Dot-notation camelCase entries (compiler may generate these).
+    // snake_case aliases are generated automatically below.
     'ui.registerComponent': noop,
     'ui.getComponent': noop,
     'ui.setSlot': noop,
-    'ui.set_slot': noop,
     'ui.getSlot': noop,
     'ui.onEvent': noop,
     'ui.setState': noop,
@@ -119,9 +128,7 @@ export function createUiClientStubs() {
     'ui.querySetStyle': noop,
     'ui.querySetAttr': noop,
     'ui.queryAddClass': noop,
-    'ui.query_add_class': noop,
     'ui.queryRemoveClass': noop,
-    'ui.query_remove_class': noop,
     'ui.filterByAttr': noop,
     'ui.filterByText': noop,
     'ui.bindInput': noop,
@@ -132,7 +139,6 @@ export function createUiClientStubs() {
     'ui.checked': noop,
     'ui.setInput': noop,
     'ui.eventAttr': noop,
-    'ui.event_attr': noop,
     'ui.eventValue': noop,
     'ui.eventClosestAttr': noop,
     'ui.eventType': noop,
@@ -140,10 +146,23 @@ export function createUiClientStubs() {
     'ui.locationHref': noop,
     'ui.locationQuery': noop,
     'ui.locationPath': noop,
-    'ui.location_path': noop,
     'ui.observeVisible': noop,
     'ui.setTimeout': noop,
   };
+
+  // Auto-generate snake_case aliases for all ui.* dot-notation entries.
+  // Iterates the camelCase keys already present and fills in any missing
+  // snake_case variant so that both naming conventions are always covered.
+  for (const key of Object.keys(stubs)) {
+    if (key.startsWith('ui.')) {
+      const snakeKey = `ui.${camelToSnake(key.slice(3))}`;
+      if (!(snakeKey in stubs)) {
+        stubs[snakeKey] = noop;
+      }
+    }
+  }
+
+  return stubs;
 }
 
 /**
