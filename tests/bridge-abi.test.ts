@@ -117,18 +117,20 @@ describe('String Bridge ABI — LP-pointer convention', () => {
   });
 
   describe('string_compare', () => {
-    it('returns 1 for equal strings', () => {
+    // Fixed: was 1 for equal / 0 for different (wrong). Spec requires 0=equal,
+    // non-zero=different because compiler codegen emits i32.eqz after this call.
+    it('returns 0 for equal strings', () => {
       const state = makeMockState(memory, HEAP_START);
       const bridge = createStringBridge(() => state);
 
-      expect(bridge.string_compare(ADDR_A, ADDR_B)).toBe(1);
+      expect(bridge.string_compare(ADDR_A, ADDR_B)).toBe(0);
     });
 
-    it('returns 0 for different strings', () => {
+    it('returns 1 for different strings', () => {
       const state = makeMockState(memory, HEAP_START);
       const bridge = createStringBridge(() => state);
 
-      expect(bridge.string_compare(ADDR_A, ADDR_C)).toBe(0);
+      expect(bridge.string_compare(ADDR_A, ADDR_C)).toBe(1);
     });
 
     it('does not throw when called with LP-pointer addresses', () => {
