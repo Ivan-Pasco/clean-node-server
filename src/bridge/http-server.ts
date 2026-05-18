@@ -3,14 +3,16 @@ import { readString, writeString, log } from './helpers';
 import { RouteRegistry } from '../router';
 
 /**
- * Strip null bytes and ASCII control characters (0x00–0x1F, 0x7F) from a string
- * before it is placed into an HTTP header value. Node's http module rejects
- * header values that contain these characters — they indicate a compiler bug
- * (null terminator included in string length) or encoding corruption.
+ * Strip characters that Node.js v22 rejects in HTTP header values.
+ *
+ * RFC 7230 §3.2.6 allows: HTAB (0x09), SP-tilde (0x20–0x7E), obs-text (0x80–0xFF).
+ * Anything outside that set — including U+FFFD (65533) emitted by TextDecoder when
+ * WASM memory contains invalid UTF-8 — causes a Node "Invalid character in header"
+ * error (NSR001). Replacing with empty string is safe: the header value is truncated
+ * rather than corrupted.
  */
 function sanitizeHeaderValue(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\x00-\x1F\x7F]/g, '');
+  return value.replace(/[^\t\x20-\x7E\x80-\xFF]/g, '');
 }
 
 /**

@@ -71,6 +71,12 @@ export function writeLengthPrefixedString(exports: WasmExports, str: string): nu
   // Snap buffer AFTER malloc — malloc may have grown WASM memory, which detaches
   // the previous ArrayBuffer and creates a new one. All writes must use this snapshot.
   const buffer = exports.memory.buffer;
+  if (ptr + totalSize > buffer.byteLength) {
+    throw new Error(
+      `WASM heap exhausted: need ${totalSize} bytes at ptr ${ptr}, buffer is ${buffer.byteLength} bytes. ` +
+      `This usually means an infinite loop exhausted the pre-grown heap (see NSR002/SEM002).`
+    );
+  }
   const view = new DataView(buffer);
   view.setUint32(ptr, bytes.length, true); // little-endian length prefix
   new Uint8Array(buffer).set(bytes, ptr + 4);

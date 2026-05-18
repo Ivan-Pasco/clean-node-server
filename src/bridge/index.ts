@@ -341,9 +341,9 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _db_rollback_migration: migrationBridge._db_rollback_migration,
       _db_migration_status: migrationBridge._db_migration_status,
 
-      // UI server functions (implemented)
-      _ui_loadLayout: uiBridge._ui_loadLayout,
-      _ui_injectHeadCss: uiBridge._ui_injectHeadCss,
+      // UI server functions (implemented) — snake_case to match plugin.toml [bridge] declarations
+      _ui_load_layout: uiBridge._ui_load_layout,
+      _ui_inject_head_css: uiBridge._ui_inject_head_css,
 
       // UI client-side no-op stubs (frame.ui declares these as WASM imports even
       // in server builds; stubs satisfy the linker — they are never called at runtime)
