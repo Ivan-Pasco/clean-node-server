@@ -165,16 +165,31 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
-     * Redirect to another URL
+     * Redirect to another URL — spec: _http_redirect(status: i32, url: string)
      */
     _http_redirect(
+      status: number,
       urlPtr: number,
-      urlLen: number,
-      permanent: number
+      urlLen: number
     ): void {
       const state = getState();
       const url = sanitizeHeaderValue(readString(state, urlPtr, urlLen));
-      state.response.status = permanent ? 301 : 302;
+      state.response.status = status;
+      state.response.headers['Location'] = url;
+      state.response.body = '';
+    },
+
+    /**
+     * Redirect to another URL — spec: _res_redirect(url: string, status: i32)
+     */
+    _res_redirect(
+      urlPtr: number,
+      urlLen: number,
+      status: number
+    ): void {
+      const state = getState();
+      const url = sanitizeHeaderValue(readString(state, urlPtr, urlLen));
+      state.response.status = status;
       state.response.headers['Location'] = url;
       state.response.body = '';
     },

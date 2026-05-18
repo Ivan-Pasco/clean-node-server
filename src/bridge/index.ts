@@ -276,7 +276,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _island_register: () => 0,
       // _res_* = alternate prefix for response builder functions (same semantics as _http_* equivalents)
       _res_set_header: httpServerBridge._http_set_header,
-      _res_redirect: httpServerBridge._http_redirect,
+      _res_redirect: httpServerBridge._res_redirect,
       _res_status: httpServerBridge._http_set_status,
       _res_body: httpServerBridge._http_set_body,
       _res_json: httpServerBridge._http_json,

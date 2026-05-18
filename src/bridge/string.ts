@@ -380,10 +380,10 @@ export function createStringBridge(getState: () => WasmState) {
      * Compare two strings (returns -1, 0, or 1)
      */
     // LP-pointer convention: one i32 LP-pointer per argument (no compiler wrapper).
-    // Note: returns 1 for equal, 0 for different (not localeCompare's -1/0/1).
+    // Returns 0 for equal, 1 for different — compiler codegen uses i32.eqz after this call.
     string_compare(lpA: number, lpB: number): number {
       const state = getState();
-      return readPrefixedString(state, lpA) === readPrefixedString(state, lpB) ? 1 : 0;
+      return readPrefixedString(state, lpA) === readPrefixedString(state, lpB) ? 0 : 1;
     },
 
     /**
