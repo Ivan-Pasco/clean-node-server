@@ -16,10 +16,11 @@ export function createCryptoBridge(getState: () => WasmState) {
   return {
     /**
      * Hash a password using bcrypt
+     * Canonical name as per function-registry.toml
      *
      * @returns Pointer to bcrypt hash string
      */
-    _auth_hash_password(passwordPtr: number, passwordLen: number): number {
+    _crypto_hash_password(passwordPtr: number, passwordLen: number): number {
       const state = getState();
       const password = readString(state, passwordPtr, passwordLen);
 
@@ -34,10 +35,11 @@ export function createCryptoBridge(getState: () => WasmState) {
 
     /**
      * Verify a password against a bcrypt hash
+     * Canonical name as per function-registry.toml
      *
      * @returns 1 if password matches, 0 otherwise
      */
-    _auth_verify_password(
+    _crypto_verify_password(
       passwordPtr: number,
       passwordLen: number,
       hashPtr: number,
@@ -53,6 +55,45 @@ export function createCryptoBridge(getState: () => WasmState) {
       } catch (err) {
         log(state, 'CRYPTO', 'Failed to verify password', err);
         return 0;
+      }
+    },
+
+    /**
+     * Generate cryptographically random bytes, returned as a base64-encoded string
+     *
+     * @param count - Number of random bytes to generate
+     * @returns Pointer to base64-encoded string
+     */
+    _crypto_random_bytes(count: number): number {
+      const state = getState();
+      const buf = crypto.randomBytes(count);
+      return writeString(state, buf.toString('base64'));
+    },
+
+    /**
+     * Compute an HMAC using the specified algorithm ('sha256' or 'sha512')
+     *
+     * @returns Pointer to hex-encoded HMAC string, or empty string on failure
+     */
+    _crypto_hmac(
+      dataPtr: number,
+      dataLen: number,
+      keyPtr: number,
+      keyLen: number,
+      algPtr: number,
+      algLen: number
+    ): number {
+      const state = getState();
+      const data = readString(state, dataPtr, dataLen);
+      const key = readString(state, keyPtr, keyLen);
+      const alg = readString(state, algPtr, algLen).toLowerCase();
+      const algorithm = alg === 'sha512' ? 'sha512' : 'sha256';
+      try {
+        const hmac = crypto.createHmac(algorithm, key).update(data).digest('hex');
+        return writeString(state, hmac);
+      } catch (err) {
+        log(state, 'CRYPTO', 'Failed to compute HMAC', err);
+        return writeString(state, '');
       }
     },
 

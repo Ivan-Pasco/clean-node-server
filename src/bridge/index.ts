@@ -170,10 +170,23 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // HTML encoding
       _html_escape: stringBridge._html_escape,
       _html_raw: stringBridge._html_raw,
-      // String dot-notation aliases (compiler may generate these)
+      // String dot-notation aliases (compiler may generate these, and registry requires them)
       'string.toNumber': stringBridge.string_to_float,
       'string.toUpperCase': stringBridge.string_to_upper,
       'string.toLowerCase': stringBridge.string_to_lower,
+      'string.substring': stringBridge.string_substring,
+      'string.trim': stringBridge.string_trim,
+      'string.trimStart': stringBridge.string_trim_start,
+      'string.trimEnd': stringBridge.string_trim_end,
+      'string.replace': stringBridge.string_replace,
+      string_toUpperCase: stringBridge.string_to_upper,
+      string_toLowerCase: stringBridge.string_to_lower,
+      // Type conversion dot-notation aliases (registry requires these)
+      'integer.toString': stringBridge.int_to_string,
+      'number.toString': stringBridge.float_to_string,
+      'boolean.toString': stringBridge.bool_to_string,
+      'string.toInteger': stringBridge.string_to_int,
+      'string.toBoolean': stringBridge.string_to_bool,
 
       // Array functions
       array_get: arrayBridge.array_get,
@@ -258,6 +271,15 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _json_encode: httpServerBridge._json_encode,
       _json_decode: httpServerBridge._json_decode,
       _json_get: httpServerBridge._json_get,
+      // Server-specific stubs (these are valid bridge entry points; not applicable in all hosts)
+      _http_serve_static: () => 0,
+      _island_register: () => 0,
+      // _res_* = alternate prefix for response builder functions (same semantics as _http_* equivalents)
+      _res_set_header: httpServerBridge._http_set_header,
+      _res_redirect: httpServerBridge._http_redirect,
+      _res_status: httpServerBridge._http_set_status,
+      _res_body: httpServerBridge._http_set_body,
+      _res_json: httpServerBridge._http_json,
 
       // Request context functions
       _req_param: requestBridge._req_param,
@@ -301,6 +323,9 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
 
       // Cryptography
       ...cryptoBridge,
+      // Backward-compat aliases: callers that used the old _auth_* names still work
+      _auth_hash_password: cryptoBridge._crypto_hash_password,
+      _auth_verify_password: cryptoBridge._crypto_verify_password,
 
       // Database
       ...databaseBridge,

@@ -1,6 +1,6 @@
 import { WasmState } from '../types';
 import { readString, writeString, log } from './helpers';
-import { getRequestContext } from '../wasm/state';
+import { getRequestContext, addResponseCookie } from '../wasm/state';
 
 /**
  * Registered roles and their permissions
@@ -425,6 +425,75 @@ export function createAuthBridge(getState: () => WasmState) {
 
       const permissions = registeredRoles.get(role) || [];
       return writeString(state, JSON.stringify(permissions));
+    },
+
+    /**
+     * Create a session from a JSON object containing user_id, role, and optional claims.
+     * Sets the session cookie on the response.
+     *
+     * @param jsonPtr - Pointer to JSON string with {user_id, role, claims}
+     * @param jsonLen - Length of JSON string
+     * @returns 1 on success, 0 on error
+     */
+    _auth_set_session(jsonPtr: number, jsonLen: number): number {
+      const state = getState();
+      const jsonStr = readString(state, jsonPtr, jsonLen);
+
+      let parsed: { user_id?: string; role?: string; claims?: Record<string, unknown> };
+      try {
+        parsed = JSON.parse(jsonStr);
+      } catch (err) {
+        log(state, 'AUTH', 'Failed to parse session JSON', err);
+        return 0;
+      }
+
+      const userId = parsed.user_id || '';
+      const role = parsed.role || '';
+      const claims = parsed.claims && typeof parsed.claims === 'object' ? parsed.claims : {};
+
+      try {
+        const sessionId = state.sessionStore.create({ userId, role, claims });
+
+        addResponseCookie(state, 'session_id', sessionId, {
+          httpOnly: true,
+          sameSite: 'lax',
+          path: '/',
+        });
+
+        log(state, 'AUTH', `Session created for user ${userId}`, { role });
+        return 1;
+      } catch (err) {
+        log(state, 'AUTH', 'Failed to create session', err);
+        return 0;
+      }
+    },
+
+    /**
+     * Clear the current session: destroys the session in the store and clears the session cookie.
+     *
+     * @returns 1 if session was cleared, 0 if no active session
+     */
+    _auth_clear_session(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+
+      if (!ctx.sessionId) {
+        return 0;
+      }
+
+      const destroyed = state.sessionStore.destroy(ctx.sessionId);
+
+      if (destroyed) {
+        addResponseCookie(state, 'session_id', '', {
+          httpOnly: true,
+          maxAge: 0,
+          path: '/',
+        });
+
+        log(state, 'AUTH', 'Session cleared');
+      }
+
+      return destroyed ? 1 : 0;
     },
   };
 }
