@@ -50,16 +50,10 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const uiBridge = createUiBridge(getState);
   const uiClientStubs = createUiClientStubs();
 
-  // Assemble into WASM import object
-  // Functions are organized by module namespace
-  return {
-    // Memory runtime module (separate namespace)
-    memory_runtime: {
-      ...memoryRuntimeBridge,
-    },
-
-    // Main env module with all functions
-    env: {
+  // Assemble the env module with all bridge functions.
+  // After assembly, dot-notation aliases are derived automatically from underscore-prefixed
+  // keys (_namespace_fn → namespace.fn) so both naming styles are always satisfied.
+  const env: WebAssembly.ModuleImports = {
       // Console functions
       print: consoleBridge.print,
       printl: consoleBridge.printl,
@@ -338,7 +332,32 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
         { value: 'i32', mutable: true },
         65536
       ),
+  };
+
+  // Auto-generate dot-notation aliases for all underscore-prefixed bridge functions.
+  // The compiler emits imports as both "_namespace_fn" and "namespace.fn"; both must
+  // be registered or the WASM linker throws a LinkError at instantiation.
+  // Rule: _namespace_fn → namespace.fn (strip leading _, replace first _ with .)
+  // Keys starting with __ (e.g. __stack_pointer) are skipped.
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('_') && !key.startsWith('__')) {
+      const stripped = key.slice(1);
+      const dotIdx = stripped.indexOf('_');
+      if (dotIdx !== -1) {
+        const dotKey = `${stripped.slice(0, dotIdx)}.${stripped.slice(dotIdx + 1)}`;
+        if (!(dotKey in env)) {
+          env[dotKey] = env[key];
+        }
+      }
+    }
+  }
+
+  return {
+    // Memory runtime module (separate namespace)
+    memory_runtime: {
+      ...memoryRuntimeBridge,
     },
+    env,
   };
 }
 
