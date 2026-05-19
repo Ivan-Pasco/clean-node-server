@@ -214,6 +214,48 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
+     * Load an HTML page template from the app/pages directory.
+     *
+     * The page is resolved at:
+     *   {projectRoot}/app/pages/{page_name}.html
+     *
+     * Returns a pointer to the HTML contents string, or an empty string if the
+     * file does not exist or cannot be read.
+     */
+    _ui_load_page(pageNamePtr: number, pageNameLen: number): number {
+      const state = getState();
+      const pageName = readString(state, pageNamePtr, pageNameLen);
+
+      if (!pageName.trim()) {
+        log(state, 'UI', 'Attempted to load page with empty name');
+        return writeString(state, '');
+      }
+
+      const projectRoot = getProjectRoot(state);
+      const pagePath = path.join(projectRoot, 'app', 'pages', `${pageName}.html`);
+
+      const resolved = path.resolve(pagePath);
+      if (!resolved.startsWith(projectRoot)) {
+        log(state, 'UI', `Page path traversal blocked: ${pageName}`);
+        return writeString(state, '');
+      }
+
+      if (!fs.existsSync(resolved)) {
+        log(state, 'UI', `Page not found: ${resolved}`);
+        return writeString(state, '');
+      }
+
+      try {
+        const contents = fs.readFileSync(resolved, 'utf8');
+        log(state, 'UI', `Loaded page '${pageName}' (${contents.length} bytes)`);
+        return writeString(state, contents);
+      } catch (err) {
+        log(state, 'UI', `Failed to read page '${pageName}': ${(err as Error).message}`);
+        return writeString(state, '');
+      }
+    },
+
+    /**
      * Accumulate a CSS string for injection into the response <head>.
      *
      * Multiple calls concatenate the CSS strings in order.  The server's
