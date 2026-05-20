@@ -450,5 +450,24 @@ export function createStringBridge(getState: () => WasmState) {
       const state = getState();
       return writeString(state, readString(state, ptr, len));
     },
+
+    /**
+     * Test whether a string matches a regex pattern (sig: i32,i32,i32,i32 -> i32)
+     */
+    string_matches(
+      ptr: number,
+      len: number,
+      patPtr: number,
+      patLen: number
+    ): number {
+      const state = getState();
+      const str = readString(state, ptr, len);
+      const pat = readString(state, patPtr, patLen);
+      try {
+        return new RegExp(pat).test(str) ? 1 : 0;
+      } catch {
+        return 0;
+      }
+    },
   };
 }

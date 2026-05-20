@@ -165,6 +165,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       string_equals: stringBridge.string_equals,
       string_char_at: stringBridge.string_char_at,
       string_repeat: stringBridge.string_repeat,
+      string_matches: stringBridge.string_matches,
       string_pad_start: stringBridge.string_pad_start,
       string_pad_end: stringBridge.string_pad_end,
       // HTML encoding
