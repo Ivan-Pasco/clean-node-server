@@ -281,6 +281,21 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _res_body: httpServerBridge._http_set_body,
       _res_json: httpServerBridge._http_json,
 
+      // Async bridge functions
+      _async_fire(fnNamePtr: number, fnNameLen: number, _argsPtr: number, _argsLen: number): void {
+        const state = getState();
+        readString(state, fnNamePtr, fnNameLen);
+      },
+      _async_await(fnNamePtr: number, fnNameLen: number, _argsPtr: number, _argsLen: number): number {
+        const state = getState();
+        readString(state, fnNamePtr, fnNameLen);
+        return writeString(state, '');
+      },
+      _server_sleep(ms: number): void {
+        const end = Date.now() + ms;
+        while (Date.now() < end) { /* busy-wait */ }
+      },
+
       // Request context functions
       _req_param: requestBridge._req_param,
       _req_param_int: requestBridge._req_param_int,

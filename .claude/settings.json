@@ -8,7 +8,8 @@
       "Bash(cln dev-queue *)",
       "Bash(cleen frame *)",
       "Bash(node -e ' *)",
-      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=open')"
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=open')",
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=__TRACKED_VAR__')"
     ]
   }
 }
