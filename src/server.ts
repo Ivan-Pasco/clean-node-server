@@ -116,7 +116,7 @@ export class CleanNodeServer {
       res.setHeader('X-Frame-Options', 'DENY');
       res.setHeader('X-XSS-Protection', '1; mode=block');
       res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-      res.setHeader('Content-Security-Policy', "default-src 'self'");
+      res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'");
       if (this.config.tlsCert) {
         res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
       }
