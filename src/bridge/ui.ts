@@ -256,6 +256,68 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
+     * Render an HTML page template from the app/pages directory with template substitution.
+     *
+     * Resolves the page at:
+     *   {projectRoot}/app/pages/{page_name}.html
+     *
+     * Substitutes all {{ key }} occurrences with the corresponding value from
+     * the JSON data string. Missing keys produce an empty string. Returns the
+     * rendered HTML as a length-prefixed string pointer, or an empty string on error.
+     */
+    _ui_render_page(pageNamePtr: number, pageNameLen: number, dataPtr: number, dataLen: number): number {
+      const state = getState();
+      const pageName = readString(state, pageNamePtr, pageNameLen);
+
+      if (!pageName.trim()) {
+        log(state, 'UI', 'Attempted to render page with empty name');
+        return writeString(state, '');
+      }
+
+      const projectRoot = getProjectRoot(state);
+      const pagePath = path.join(projectRoot, 'app', 'pages', `${pageName}.html`);
+
+      const resolved = path.resolve(pagePath);
+      if (!resolved.startsWith(projectRoot)) {
+        log(state, 'UI', `Page path traversal blocked: ${pageName}`);
+        return writeString(state, '');
+      }
+
+      if (!fs.existsSync(resolved)) {
+        log(state, 'UI', `Page not found: ${resolved}`);
+        return writeString(state, '');
+      }
+
+      let template: string;
+      try {
+        template = fs.readFileSync(resolved, 'utf8');
+      } catch (err) {
+        log(state, 'UI', `Failed to read page '${pageName}': ${(err as Error).message}`);
+        return writeString(state, '');
+      }
+
+      let data: Record<string, unknown> = {};
+      if (dataLen > 0) {
+        const dataStr = readString(state, dataPtr, dataLen);
+        if (dataStr.trim()) {
+          try {
+            data = JSON.parse(dataStr);
+          } catch {
+            log(state, 'UI', `Invalid JSON data for page '${pageName}' — rendering without substitution`);
+          }
+        }
+      }
+
+      const rendered = template.replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => {
+        const value = (data as Record<string, unknown>)[key];
+        return value !== undefined && value !== null ? String(value) : '';
+      });
+
+      log(state, 'UI', `Rendered page '${pageName}' (${rendered.length} bytes)`);
+      return writeString(state, rendered);
+    },
+
+    /**
      * Accumulate a CSS string for injection into the response <head>.
      *
      * Multiple calls concatenate the CSS strings in order.  The server's

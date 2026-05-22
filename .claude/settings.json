@@ -9,7 +9,9 @@
       "Bash(cleen frame *)",
       "Bash(node -e ' *)",
       "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=open')",
-      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=__TRACKED_VAR__')"
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=__TRACKED_VAR__&status=__TRACKED_VAR__')",
+      "Bash(curl -s https://registry.npmjs.org/@ivan-pasco/clean-node-server)",
+      "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('latest:', d.get\\('dist-tags',{}\\).get\\('latest','?'\\), '| versions:', list\\(d.get\\('versions',{}\\).keys\\(\\)\\)[-3:]\\)\")"
     ]
   }
 }
