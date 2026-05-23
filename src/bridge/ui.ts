@@ -171,30 +171,28 @@ export function createUiClientStubs(): Record<string, () => number> {
 export function createUiBridge(getState: () => WasmState) {
   return {
     /**
-     * Load an HTML layout file from the app/layouts directory.
-     *
-     * The layout is resolved at:
-     *   {projectRoot}/app/layouts/{layout_name}.html
+     * Load an HTML layout file. Caller provides the full relative path from
+     * project root (e.g. "app/ui/layouts/main.html"). Path construction is
+     * the caller's responsibility.
      *
      * Returns a pointer to the HTML contents string, or an empty string if the
      * file does not exist or cannot be read.
      */
     _ui_load_layout(layoutNamePtr: number, layoutNameLen: number): number {
       const state = getState();
-      const layoutName = readString(state, layoutNamePtr, layoutNameLen);
+      const layoutPath = readString(state, layoutNamePtr, layoutNameLen);
 
-      if (!layoutName.trim()) {
-        log(state, 'UI', 'Attempted to load layout with empty name');
+      if (!layoutPath.trim()) {
+        log(state, 'UI', 'Attempted to load layout with empty path');
         return writeString(state, '');
       }
 
       const projectRoot = getProjectRoot(state);
-      const layoutPath = path.join(projectRoot, 'app', 'layouts', `${layoutName}.html`);
+      const resolved = path.resolve(projectRoot, layoutPath);
 
       // Ensure the resolved path stays within the project root (prevent traversal)
-      const resolved = path.resolve(layoutPath);
       if (!resolved.startsWith(projectRoot)) {
-        log(state, 'UI', `Layout path traversal blocked: ${layoutName}`);
+        log(state, 'UI', `Layout path traversal blocked: ${layoutPath}`);
         return writeString(state, '');
       }
 
@@ -205,38 +203,36 @@ export function createUiBridge(getState: () => WasmState) {
 
       try {
         const contents = fs.readFileSync(resolved, 'utf8');
-        log(state, 'UI', `Loaded layout '${layoutName}' (${contents.length} bytes)`);
+        log(state, 'UI', `Loaded layout '${layoutPath}' (${contents.length} bytes)`);
         return writeString(state, contents);
       } catch (err) {
-        log(state, 'UI', `Failed to read layout '${layoutName}': ${(err as Error).message}`);
+        log(state, 'UI', `Failed to read layout '${layoutPath}': ${(err as Error).message}`);
         return writeString(state, '');
       }
     },
 
     /**
-     * Load an HTML page template from the app/pages directory.
-     *
-     * The page is resolved at:
-     *   {projectRoot}/app/pages/{page_name}.html
+     * Load an HTML page template. Caller provides the full relative path from
+     * project root (e.g. "app/ui/pages/index.html"). Path construction is
+     * the caller's responsibility.
      *
      * Returns a pointer to the HTML contents string, or an empty string if the
      * file does not exist or cannot be read.
      */
     _ui_load_page(pageNamePtr: number, pageNameLen: number): number {
       const state = getState();
-      const pageName = readString(state, pageNamePtr, pageNameLen);
+      const pagePath = readString(state, pageNamePtr, pageNameLen);
 
-      if (!pageName.trim()) {
-        log(state, 'UI', 'Attempted to load page with empty name');
+      if (!pagePath.trim()) {
+        log(state, 'UI', 'Attempted to load page with empty path');
         return writeString(state, '');
       }
 
       const projectRoot = getProjectRoot(state);
-      const pagePath = path.join(projectRoot, 'app', 'pages', `${pageName}.html`);
+      const resolved = path.resolve(projectRoot, pagePath);
 
-      const resolved = path.resolve(pagePath);
       if (!resolved.startsWith(projectRoot)) {
-        log(state, 'UI', `Page path traversal blocked: ${pageName}`);
+        log(state, 'UI', `Page path traversal blocked: ${pagePath}`);
         return writeString(state, '');
       }
 
@@ -247,19 +243,18 @@ export function createUiBridge(getState: () => WasmState) {
 
       try {
         const contents = fs.readFileSync(resolved, 'utf8');
-        log(state, 'UI', `Loaded page '${pageName}' (${contents.length} bytes)`);
+        log(state, 'UI', `Loaded page '${pagePath}' (${contents.length} bytes)`);
         return writeString(state, contents);
       } catch (err) {
-        log(state, 'UI', `Failed to read page '${pageName}': ${(err as Error).message}`);
+        log(state, 'UI', `Failed to read page '${pagePath}': ${(err as Error).message}`);
         return writeString(state, '');
       }
     },
 
     /**
-     * Render an HTML page template from the app/pages directory with template substitution.
-     *
-     * Resolves the page at:
-     *   {projectRoot}/app/pages/{page_name}.html
+     * Render an HTML template with {{ key }} substitution. Caller provides the
+     * full relative path from project root (e.g. "app/ui/pages/index.html").
+     * Path construction is the caller's responsibility.
      *
      * Substitutes all {{ key }} occurrences with the corresponding value from
      * the JSON data string. Missing keys produce an empty string. Returns the
@@ -267,19 +262,18 @@ export function createUiBridge(getState: () => WasmState) {
      */
     _ui_render_page(pageNamePtr: number, pageNameLen: number, dataPtr: number, dataLen: number): number {
       const state = getState();
-      const pageName = readString(state, pageNamePtr, pageNameLen);
+      const pagePath = readString(state, pageNamePtr, pageNameLen);
 
-      if (!pageName.trim()) {
-        log(state, 'UI', 'Attempted to render page with empty name');
+      if (!pagePath.trim()) {
+        log(state, 'UI', 'Attempted to render page with empty path');
         return writeString(state, '');
       }
 
       const projectRoot = getProjectRoot(state);
-      const pagePath = path.join(projectRoot, 'app', 'pages', `${pageName}.html`);
+      const resolved = path.resolve(projectRoot, pagePath);
 
-      const resolved = path.resolve(pagePath);
       if (!resolved.startsWith(projectRoot)) {
-        log(state, 'UI', `Page path traversal blocked: ${pageName}`);
+        log(state, 'UI', `Page path traversal blocked: ${pagePath}`);
         return writeString(state, '');
       }
 
@@ -292,7 +286,7 @@ export function createUiBridge(getState: () => WasmState) {
       try {
         template = fs.readFileSync(resolved, 'utf8');
       } catch (err) {
-        log(state, 'UI', `Failed to read page '${pageName}': ${(err as Error).message}`);
+        log(state, 'UI', `Failed to read page '${pagePath}': ${(err as Error).message}`);
         return writeString(state, '');
       }
 
@@ -303,7 +297,7 @@ export function createUiBridge(getState: () => WasmState) {
           try {
             data = JSON.parse(dataStr);
           } catch {
-            log(state, 'UI', `Invalid JSON data for page '${pageName}' — rendering without substitution`);
+            log(state, 'UI', `Invalid JSON data for page '${pagePath}' — rendering without substitution`);
           }
         }
       }
@@ -313,7 +307,7 @@ export function createUiBridge(getState: () => WasmState) {
         return value !== undefined && value !== null ? String(value) : '';
       });
 
-      log(state, 'UI', `Rendered page '${pageName}' (${rendered.length} bytes)`);
+      log(state, 'UI', `Rendered page '${pagePath}' (${rendered.length} bytes)`);
       return writeString(state, rendered);
     },
 
