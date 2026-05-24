@@ -367,6 +367,11 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // in server builds; stubs satisfy the linker — they are never called at runtime)
       ...uiClientStubs,
 
+      // State reset functions (emitted by compiler 0.30.155+ in every module)
+      // No-op for bump-allocator runtime; required to satisfy WASM instantiation.
+      _state_reset_all(): void {},
+      _state_reset_named(_namePtr: number): void {},
+
       // Memory management stubs
       __stack_pointer: new WebAssembly.Global(
         { value: 'i32', mutable: true },
