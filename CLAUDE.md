@@ -13,41 +13,29 @@ Clean Node Server provides a Node.js-based runtime for Clean Language WebAssembl
 
 ## Cross-Component Work Policy
 
-**CRITICAL: AI Instance Separation of Concerns**
+**CRITICAL: You are a Team Developer AI.** When you discover something in another component, choose the correct channel based on what you found:
 
-When working in this component and discovering errors, bugs, or required changes in **another component** (different folder in the Clean Language project), you must **NOT** directly fix or modify code in that other component.
+| What you found | Channel | Why |
+|---|---|---|
+| A **bug** (crash, wrong output, spec violation, regression) | **`report_error` MCP tool** — MANDATORY | Fingerprint dedup, occurrence tracking, automatic user notification on fix, visible on errors.cleanlanguage.dev |
+| A **design proposal, directive change, schema/API request, architectural ask** | Markdown file in `../foundation/management/cross-component-prompts/` | Requires discussion, not auto-fix |
 
-Instead:
-
-1. **Document the issue** by creating a prompt/task description
-2. **Save the prompt** in a file that can be executed by the AI instance working in the correct folder
-3. **Location for cross-component prompts**: Save prompts in `../foundation/management/cross-component-prompts/` at the project root
-
-### Prompt Format for Cross-Component Issues
-
-See [`foundation/management/cross-component-prompts/README.md`](../foundation/management/cross-component-prompts/README.md) for the required header format and filename prefix convention. Use the `node-server-` prefix for issues that originated here and need to be routed back; use the correct target prefix (e.g. `server-`, `compiler-`) for issues in other components.
-
-### Why This Rule Exists
-
-- Each component has its own context, dependencies, and testing requirements
-- AI instances are optimized for their specific component's codebase
-- Cross-component changes without proper context can introduce bugs
-- This maintains clear boundaries and accountability
-- Ensures changes are properly tested in the target component's environment
+**Never** write a markdown file for something that is a bug. Bug reports in markdown are invisible to the dashboard, don't notify users when fixed, and can't be queried via `list_component_bugs`.
 
 ### What You CAN Do
 
 - Read files from other components to understand interfaces
-- Document compatibility issues found
-- Create detailed prompts for the correct AI instance
+- Call `report_error` for bugs found in other components
+- Write markdown prompts for design/architecture discussions
 - Update your component to work with existing interfaces
 
 ### What You MUST NOT Do
 
 - Directly edit code in other components
 - Make changes to other components' configuration files
-- Modify shared resources without coordination
-- Skip the prompt creation step for cross-component issues
+- Write a markdown file for something that is a bug — use `report_error` instead
+
+See `../foundation/management/USER_TYPES_AND_ERROR_REPORTING.md` for the full policy.
 
 ## Documentation Sync Protocol
 

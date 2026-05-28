@@ -324,16 +324,7 @@ export function createHttpServerBridge(getState: () => WasmState) {
     _json_encode(value_ptr: number, value_len: number): number {
       const state = getState();
       const value = readString(state, value_ptr, value_len);
-
-      try {
-        // Try to parse it as JSON first (to validate)
-        const parsed = JSON.parse(value);
-        // If successful, re-serialize it
-        return writeString(state, JSON.stringify(parsed));
-      } catch {
-        // If not valid JSON, treat as string and wrap in quotes
-        return writeString(state, JSON.stringify(value));
-      }
+      return writeString(state, JSON.stringify(value));
     },
 
     /**
