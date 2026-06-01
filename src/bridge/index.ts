@@ -19,6 +19,7 @@ import { createArrayBridge } from './array';
 import { createListBridge } from './list';
 import { createMigrationBridge } from './migration';
 import { createUiBridge, createUiClientStubs } from './ui';
+import { createMcpBridge } from './mcp';
 import { readString, writeString } from './helpers';
 
 /**
@@ -49,6 +50,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const migrationBridge = createMigrationBridge(getState);
   const uiBridge = createUiBridge(getState);
   const uiClientStubs = createUiClientStubs();
+  const mcpBridge = createMcpBridge(getState);
 
   // Assemble the env module with all bridge functions.
   // The compiler (v0.30.123+) emits only canonical _namespace_fn import names.
@@ -362,10 +364,19 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _ui_load_page: uiBridge._ui_load_page,
       _ui_render_page: uiBridge._ui_render_page,
       _ui_inject_head_css: uiBridge._ui_inject_head_css,
+      _ui_inject_head_link: uiBridge._ui_inject_head_link,
 
       // UI client-side no-op stubs (frame.ui declares these as WASM imports even
       // in server builds; stubs satisfy the linker — they are never called at runtime)
       ...uiClientStubs,
+
+      // MCP bridge functions
+      _mcp_stdio_read: mcpBridge._mcp_stdio_read,
+      _mcp_stdio_write: mcpBridge._mcp_stdio_write,
+      _mcp_http_serve: mcpBridge._mcp_http_serve,
+      _mcp_http_accept: mcpBridge._mcp_http_accept,
+      _mcp_sse_send: mcpBridge._mcp_sse_send,
+      _mcp_log: mcpBridge._mcp_log,
 
       // State reset functions (emitted by compiler 0.30.155+ in every module)
       // No-op for bump-allocator runtime; required to satisfy WASM instantiation.
@@ -408,3 +419,4 @@ export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
 export { createListBridge, getListStore, resetListStore } from './list';
 export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
 export { createUiBridge, createUiClientStubs } from './ui';
+export { createMcpBridge } from './mcp';

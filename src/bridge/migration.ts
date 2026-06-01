@@ -3,9 +3,18 @@ import { readString, writeString, log } from './helpers';
 import { createDatabaseDriver } from '../database';
 
 /**
- * Registered migration names in declared order
+ * A single registered migration with its SQL strings
  */
-const registeredMigrations: string[] = [];
+interface MigrationDef {
+  name: string;
+  upSql: string;
+  downSql: string;
+}
+
+/**
+ * Registered migrations in declared order
+ */
+const registeredMigrations: MigrationDef[] = [];
 
 /**
  * Result cache for async migration operations (follows the same pattern as database.ts)
@@ -166,16 +175,23 @@ export function createMigrationBridge(getState: () => WasmState) {
     },
 
     /**
-     * Register a migration by name.
+     * Register a migration with its SQL up/down strings.
      *
-     * The migration's WASM up/down exports must be named:
-     *   __migration_{cleanName}_up()
-     *   __migration_{cleanName}_down()
-     * where cleanName replaces hyphens, dots, and spaces with underscores.
+     * Parameters (6 i32 values):
+     *   namePtr, nameLen   – migration name (e.g. "001_create_users")
+     *   upPtr,   upLen     – SQL to apply the migration
+     *   downPtr, downLen   – SQL to revert the migration
      *
-     * Returns 1 on success.
+     * Returns 1 on success, 0 on error.
      */
-    _db_register_migration(namePtr: number, nameLen: number): number {
+    _db_register_migration(
+      namePtr: number,
+      nameLen: number,
+      upPtr: number,
+      upLen: number,
+      downPtr: number,
+      downLen: number
+    ): number {
       const state = getState();
       const name = readString(state, namePtr, nameLen);
 
@@ -184,8 +200,11 @@ export function createMigrationBridge(getState: () => WasmState) {
         return 0;
       }
 
-      if (!registeredMigrations.includes(name)) {
-        registeredMigrations.push(name);
+      const upSql = readString(state, upPtr, upLen);
+      const downSql = readString(state, downPtr, downLen);
+
+      if (!registeredMigrations.find((m) => m.name === name)) {
+        registeredMigrations.push({ name, upSql, downSql });
         log(state, 'MIGRATION', `Registered migration: ${name}`);
       }
 
@@ -358,24 +377,36 @@ export function createMigrationBridge(getState: () => WasmState) {
 
           let applied = 0;
 
-          for (const name of registeredMigrations) {
+          for (const migration of registeredMigrations) {
+            const { name, upSql } = migration;
+
             if (appliedSet.has(name)) {
               continue;
             }
 
-            const cleanName = toCleanName(name);
-            const upExportName = `__migration_${cleanName}_up`;
-            const upFn = state.exports[upExportName];
-
-            if (typeof upFn === 'function') {
+            // Prefer stored SQL; fall back to WASM export for legacy migrations
+            if (upSql.trim()) {
               try {
-                (upFn as () => void)();
+                await state.database!.execute(upSql, []);
               } catch (err) {
-                log(state, 'MIGRATION', `Migration '${name}' up() threw: ${(err as Error).message}`);
+                log(state, 'MIGRATION', `Migration '${name}' SQL up failed: ${(err as Error).message}`);
                 break;
               }
             } else {
-              log(state, 'MIGRATION', `Migration '${name}' has no WASM export '${upExportName}', skipping`);
+              const cleanName = toCleanName(name);
+              const upExportName = `__migration_${cleanName}_up`;
+              const upFn = state.exports[upExportName];
+
+              if (typeof upFn === 'function') {
+                try {
+                  (upFn as () => void)();
+                } catch (err) {
+                  log(state, 'MIGRATION', `Migration '${name}' up() threw: ${(err as Error).message}`);
+                  break;
+                }
+              } else {
+                log(state, 'MIGRATION', `Migration '${name}' has no SQL or WASM export, skipping`);
+              }
             }
 
             const insertSql = isPostgres
@@ -431,20 +462,34 @@ export function createMigrationBridge(getState: () => WasmState) {
             return;
           }
 
-          const cleanName = toCleanName(name);
-          const downExportName = `__migration_${cleanName}_down`;
-          const downFn = state.exports[downExportName];
+          const migDef = registeredMigrations.find((m) => m.name === name);
+          const downSql = migDef?.downSql ?? '';
 
-          if (typeof downFn === 'function') {
+          // Prefer stored SQL; fall back to WASM export for legacy migrations
+          if (downSql.trim()) {
             try {
-              (downFn as () => void)();
+              await state.database!.execute(downSql, []);
             } catch (err) {
-              log(state, 'MIGRATION', `Migration '${name}' down() threw: ${(err as Error).message}`);
+              log(state, 'MIGRATION', `Migration '${name}' SQL down failed: ${(err as Error).message}`);
               rollbackResult = 0;
               return;
             }
           } else {
-            log(state, 'MIGRATION', `Migration '${name}' has no WASM export '${downExportName}', proceeding with DB record deletion only`);
+            const cleanName = toCleanName(name);
+            const downExportName = `__migration_${cleanName}_down`;
+            const downFn = state.exports[downExportName];
+
+            if (typeof downFn === 'function') {
+              try {
+                (downFn as () => void)();
+              } catch (err) {
+                log(state, 'MIGRATION', `Migration '${name}' down() threw: ${(err as Error).message}`);
+                rollbackResult = 0;
+                return;
+              }
+            } else {
+              log(state, 'MIGRATION', `Migration '${name}' has no SQL or WASM export, proceeding with DB record deletion only`);
+            }
           }
 
           const deleteSql = isPostgres
@@ -477,7 +522,7 @@ export function createMigrationBridge(getState: () => WasmState) {
       const state = getState();
 
       if (!state.database) {
-        const empty = registeredMigrations.map((name) => ({
+        const empty = registeredMigrations.map(({ name }) => ({
           name,
           applied: false,
           applied_at: null,
@@ -493,7 +538,7 @@ export function createMigrationBridge(getState: () => WasmState) {
         : `SELECT name, applied_at FROM _migrations`;
 
       let statusResult = JSON.stringify(
-        registeredMigrations.map((name) => ({ name, applied: false, applied_at: null }))
+        registeredMigrations.map(({ name }) => ({ name, applied: false, applied_at: null }))
       );
 
       state.database
@@ -509,7 +554,7 @@ export function createMigrationBridge(getState: () => WasmState) {
             }
           }
 
-          const statuses = registeredMigrations.map((name) => {
+          const statuses = registeredMigrations.map(({ name }) => {
             const isApplied = appliedMap.has(name);
             return {
               name,
@@ -537,8 +582,8 @@ export function resetRegisteredMigrations(): void {
 }
 
 /**
- * Get a copy of the registered migrations list (for testing purposes)
+ * Get a copy of the registered migration names (for testing purposes)
  */
 export function getRegisteredMigrations(): string[] {
-  return [...registeredMigrations];
+  return registeredMigrations.map((m) => m.name);
 }

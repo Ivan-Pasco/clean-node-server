@@ -333,5 +333,30 @@ export function createUiBridge(getState: () => WasmState) {
 
       return 1;
     },
+
+    /**
+     * Inject a <link rel="stylesheet" href="..."> into the response <head>.
+     *
+     * Deduplicated by href — calling multiple times with the same href produces
+     * only one <link> tag.  The server's response builder checks state.injectedLinks
+     * before sending HTML responses.
+     *
+     * Returns 1 on success.
+     */
+    _ui_inject_head_link(hrefPtr: number, hrefLen: number): number {
+      const state = getState();
+      const href = readString(state, hrefPtr, hrefLen);
+
+      if (!state.injectedLinks) {
+        state.injectedLinks = [];
+      }
+
+      if (!state.injectedLinks.includes(href)) {
+        state.injectedLinks.push(href);
+        log(state, 'UI', `Injected head link: ${href}`);
+      }
+
+      return 1;
+    },
   };
 }

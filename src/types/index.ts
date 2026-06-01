@@ -168,6 +168,7 @@ export interface WasmState {
   routeRegistry: RouteHandler[];
   database?: DatabaseDriver;
   injectedCss?: string[];
+  injectedLinks?: string[];
   projectRoot?: string;
   memoryStats: MemoryStats;
   httpClient: HttpClientState;
