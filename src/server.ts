@@ -1,6 +1,8 @@
 import * as http from 'http';
 import * as https from 'https';
 import * as fs from 'fs';
+import * as path from 'path';
+import { Worker } from 'worker_threads';
 import { randomUUID } from 'crypto';
 import express, { Request, Response, NextFunction } from 'express';
 import cookieParser from 'cookie-parser';
@@ -12,6 +14,7 @@ import {
   WasmState,
   ServerConfig,
   RequestContext,
+  RouteHandler,
   AnySessionStore,
   DatabaseDriver,
   SyncHttpWorker,
@@ -23,6 +26,7 @@ import { createBridgeImports } from './bridge';
 import { getRouteRegistry, setRouteRegistry, getConfiguredPort } from './bridge/http-server';
 import { readLengthPrefixedString, preGrowMemory } from './wasm/memory';
 import { getSandboxRoot } from './bridge/file';
+import type { SseWorkerInit, SseWorkerOutbound } from './workers/worker-types';
 import { SyncHttpClient } from './bridge/http-client';
 import { RequestWorkerPool } from './workers/request-pool';
 import { createLogger, getLogger } from './telemetry/logger';
@@ -263,6 +267,11 @@ export class CleanNodeServer {
       sessionId: req.cookies?.session_id,
     };
 
+    // SSE routes bypass the worker pool and run in a dedicated per-connection worker.
+    if (route.isSse) {
+      return this.handleSseRequest(req, res, route, context);
+    }
+
     if (!this.requestPool) {
       res.status(503).json({ ok: false, err: { code: 'NOT_READY', message: 'Worker pool not initialized' } });
       return;
@@ -300,6 +309,106 @@ export class CleanNodeServer {
     } finally {
       this.inflightCount--;
     }
+  }
+
+  /**
+   * Handle an SSE (STREAM) route request.
+   *
+   * Spawns a dedicated SSE worker thread that owns a fresh WASM instance.
+   * The WASM handler runs synchronously in the worker; each _sse_emit call
+   * posts a message to the main thread, which writes it to the Express response.
+   * Client disconnect is signaled via a SharedArrayBuffer so the WASM handler
+   * can break out of its streaming loop via _sse_is_connected().
+   */
+  private handleSseRequest(
+    req: Request,
+    res: Response,
+    route: RouteHandler,
+    context: RequestContext
+  ): void {
+    const log = createLogger(this.config.verbose);
+
+    if (!route.sseHandlerName) {
+      res.status(500).json({ ok: false, err: { code: 'INTERNAL_ERROR', message: 'SSE route has no handler name' } });
+      return;
+    }
+
+    // SSE wire-protocol headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    // Override the default no-cache headers set by the security middleware
+    res.removeHeader('Pragma');
+    res.removeHeader('Expires');
+    res.flushHeaders();
+
+    // 4-byte SAB: Int32Array[0] = 1 (connected) | 0 (disconnected)
+    const sseControlBuffer = new SharedArrayBuffer(4);
+    const sseControl = new Int32Array(sseControlBuffer);
+    Atomics.store(sseControl, 0, 1);
+
+    const workerInit: SseWorkerInit = {
+      wasmPath: this.loader.getPath(),
+      config: this.config,
+      databaseUrl: this.config.databaseUrl,
+      sandboxRoot: getSandboxRoot(),
+      sseControlBuffer,
+    };
+
+    const worker = new Worker(
+      path.join(__dirname, 'workers', 'sse-worker.js'),
+      { workerData: workerInit }
+    );
+
+    let streamEnded = false;
+    const endStream = (): void => {
+      if (streamEnded) return;
+      streamEnded = true;
+      try { res.end(); } catch { /* already closed */ }
+      void worker.terminate().catch(() => undefined);
+    };
+
+    worker.on('message', (msg: SseWorkerOutbound) => {
+      switch (msg.type) {
+        case 'ready':
+          worker.postMessage({
+            type: 'sse_request',
+            context,
+            handlerName: route.sseHandlerName!,
+          });
+          break;
+        case 'sse_emit':
+          if (!streamEnded) res.write(`data: ${msg.data}\n\n`);
+          break;
+        case 'sse_emit_event':
+          if (!streamEnded) res.write(`event: ${msg.name}\ndata: ${msg.data}\n\n`);
+          break;
+        case 'sse_retry':
+          if (!streamEnded) res.write(`retry: ${msg.ms}\n\n`);
+          break;
+        case 'sse_close':
+        case 'sse_done':
+          endStream();
+          break;
+        case 'fatal':
+          log.error({ handler: route.sseHandlerName, msg }, 'SSE worker error');
+          endStream();
+          break;
+      }
+    });
+
+    worker.on('error', (err) => {
+      log.error({ err }, 'SSE worker uncaught error');
+      endStream();
+    });
+
+    // Client disconnected — signal the WASM handler via the SAB
+    req.on('close', () => {
+      Atomics.store(sseControl, 0, 0);
+      // Give the WASM handler ~5 s to observe the disconnect and return cleanly
+      setTimeout(endStream, 5000);
+    });
   }
 
   async gracefulShutdown(timeoutMs = 30000): Promise<void> {

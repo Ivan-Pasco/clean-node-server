@@ -80,6 +80,30 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
+     * Register a Server-Sent Events (STREAM) route.
+     * The handler is identified by its exported WASM function name, not a table index.
+     * The SSE worker calls exports[handlerName]() when a request arrives.
+     */
+    _http_sse_route(
+      methodPtr: number,
+      methodLen: number,
+      pathPtr: number,
+      pathLen: number,
+      handlerPtr: number,
+      handlerLen: number
+    ): void {
+      const state = getState();
+      const method = readString(state, methodPtr, methodLen);
+      const path = readString(state, pathPtr, pathLen);
+      const handlerName = readString(state, handlerPtr, handlerLen);
+
+      const registry = getRouteRegistry();
+      registry.registerSse(method, path, handlerName);
+
+      log(state, 'HTTP', `SSE route registered: ${method} ${path} -> ${handlerName}`);
+    },
+
+    /**
      * Register a protected route handler (requires authentication)
      */
     _http_route_protected(

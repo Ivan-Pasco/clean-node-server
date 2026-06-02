@@ -1,5 +1,41 @@
 import { ServerConfig, RequestContext } from '../types';
 
+// ── SSE Worker types ─────────────────────────────────────────────────────────
+
+export interface SseWorkerInit {
+  wasmPath: string;
+  config: ServerConfig;
+  databaseUrl?: string;
+  sandboxRoot: string;
+  /** 4-byte SAB: Int32Array[0] = 1 (connected) | 0 (disconnected). */
+  sseControlBuffer: SharedArrayBuffer;
+}
+
+export interface SseWorkerRequestMsg {
+  type: 'sse_request';
+  context: RequestContext;
+  /** Exported WASM function name to call (e.g. "handle_stream"). */
+  handlerName: string;
+}
+
+export interface SseEmitMsg { type: 'sse_emit'; data: string; }
+export interface SseEmitEventMsg { type: 'sse_emit_event'; name: string; data: string; }
+export interface SseRetryMsg { type: 'sse_retry'; ms: number; }
+export interface SseCloseMsg { type: 'sse_close'; }
+export interface SseDoneMsg { type: 'sse_done'; }
+
+export type SseWorkerInbound = SseWorkerRequestMsg;
+export type SseWorkerOutbound =
+  | SseEmitMsg
+  | SseEmitEventMsg
+  | SseRetryMsg
+  | SseCloseMsg
+  | SseDoneMsg
+  | WorkerReadyMsg
+  | WorkerFatalMsg;
+
+// ── Request Worker types ─────────────────────────────────────────────────────
+
 export interface WorkerInit {
   wasmPath: string;
   config: ServerConfig;

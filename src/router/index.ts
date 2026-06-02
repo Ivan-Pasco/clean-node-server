@@ -59,6 +59,26 @@ export class RouteRegistry {
   }
 
   /**
+   * Register an SSE (Server-Sent Events) stream route.
+   * Called by the _http_sse_route bridge function during WASM start().
+   * The handlerName is the exported WASM function name to call for this route.
+   */
+  registerSse(method: string, pattern: string, handlerName: string): void {
+    const { regex, paramNames } = this.compilePattern(pattern);
+    const handlerIndex = this.registrationCounter++;
+    this.routes.push({
+      method: method.toUpperCase(),
+      pattern,
+      regex,
+      paramNames,
+      handlerIndex,
+      isProtected: false,
+      isSse: true,
+      sseHandlerName: handlerName,
+    });
+  }
+
+  /**
    * Get all registered routes
    */
   getRoutes(): RouteHandler[] {

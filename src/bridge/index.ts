@@ -19,6 +19,7 @@ import { createArrayBridge } from './array';
 import { createListBridge } from './list';
 import { createMigrationBridge } from './migration';
 import { createUiBridge, createUiClientStubs } from './ui';
+import { createSseBridge } from './sse';
 import { createMcpBridge } from './mcp';
 import { createTestBridge } from './test';
 import { readString, writeString } from './helpers';
@@ -51,6 +52,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const migrationBridge = createMigrationBridge(getState);
   const uiBridge = createUiBridge(getState);
   const uiClientStubs = createUiClientStubs();
+  const sseBridge = createSseBridge(getState);
   const mcpBridge = createMcpBridge(getState);
   const testBridge = createTestBridge(getState);
 
@@ -277,6 +279,16 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _json_encode: httpServerBridge._json_encode,
       _json_decode: httpServerBridge._json_decode,
       _json_get: httpServerBridge._json_get,
+      // SSE route registration
+      _http_sse_route: httpServerBridge._http_sse_route,
+
+      // SSE bridge functions (fully implemented — backed by sse-worker thread)
+      _sse_emit: sseBridge._sse_emit,
+      _sse_emit_event: sseBridge._sse_emit_event,
+      _sse_close: sseBridge._sse_close,
+      _sse_retry: sseBridge._sse_retry,
+      _sse_is_connected: sseBridge._sse_is_connected,
+
       // Server-specific stubs (these are valid bridge entry points; not applicable in all hosts)
       _http_serve_static: () => 0,
       _island_register: () => 0,
@@ -427,5 +439,6 @@ export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
 export { createListBridge, getListStore, resetListStore } from './list';
 export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
 export { createUiBridge, createUiClientStubs } from './ui';
+export { createSseBridge } from './sse';
 export { createMcpBridge } from './mcp';
 export { createTestBridge, resetTestBridge } from './test';

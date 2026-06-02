@@ -107,6 +107,28 @@ export function createUiClientStubs(): Record<string, () => number> {
     // Timers
     _ui_set_timeout: noop,
 
+    // DOM query — §FEXT-2 (browser-only; returns LP empty string on server)
+    _ui_get_bounds: noop,
+    _ui_get_offset_bounds: noop,
+    _ui_get_scroll: noop,
+    _ui_set_scroll: noop,
+    _ui_query_all: noop,
+    _ui_get_computed_style: noop,
+
+    // DOM patching — §FEXT-5 (browser-only no-op on server)
+    _ui_patch: noop,
+
+    // iframe communication — §FEXT-3 (browser-only no-op on server)
+    _ui_iframe_send: noop,
+    _ui_iframe_on_message: noop,
+    _ui_iframe_get_bounds: noop,
+    _ui_iframe_inject: noop,
+
+    // Drag data — §FEXT-1 (browser-only no-op on server)
+    _ui_set_drag_data: noop,
+    _ui_get_drag_data: noop,
+    _ui_event_data_json: noop,
+
     // Dot-notation camelCase entries (compiler may generate these).
     // snake_case aliases are generated automatically below.
     'ui.registerComponent': noop,
@@ -148,6 +170,28 @@ export function createUiClientStubs(): Record<string, () => number> {
     'ui.locationPath': noop,
     'ui.observeVisible': noop,
     'ui.setTimeout': noop,
+
+    // DOM query dot-notation (§FEXT-2)
+    'ui.getBounds': noop,
+    'ui.getOffsetBounds': noop,
+    'ui.getScroll': noop,
+    'ui.setScroll': noop,
+    'ui.queryAll': noop,
+    'ui.getComputedStyle': noop,
+
+    // DOM patching dot-notation (§FEXT-5)
+    'ui.patch': noop,
+
+    // iframe communication dot-notation (§FEXT-3)
+    'ui.iframeSend': noop,
+    'ui.iframeOnMessage': noop,
+    'ui.iframeGetBounds': noop,
+    'ui.iframeInject': noop,
+
+    // Drag data dot-notation (§FEXT-1)
+    'ui.setDragData': noop,
+    'ui.getDragData': noop,
+    'ui.eventDataJson': noop,
   };
 
   // Auto-generate snake_case aliases for all ui.* dot-notation entries.

@@ -48,6 +48,18 @@ export interface RouteHandler {
   handlerIndex: number;
   isProtected: boolean;
   requiredRole?: string;
+  isSse?: boolean;
+  sseHandlerName?: string;
+}
+
+/**
+ * SSE connection context stored in WasmState for SSE worker threads.
+ * The controlBuffer is a 4-byte SharedArrayBuffer:
+ *   Int32Array[0] = 1 (connected) or 0 (disconnected).
+ * Written by the main thread, read by the worker via Atomics.load.
+ */
+export interface SseContext {
+  controlBuffer: SharedArrayBuffer;
 }
 
 /**
@@ -173,6 +185,7 @@ export interface WasmState {
   memoryStats: MemoryStats;
   httpClient: HttpClientState;
   httpWorker?: SyncHttpWorker;
+  sseContext?: SseContext;
 }
 
 /**
