@@ -451,23 +451,22 @@ export function createStringBridge(getState: () => WasmState) {
       return writeString(state, readString(state, ptr, len));
     },
 
-    /**
-     * Test whether a string matches a regex pattern (sig: i32,i32,i32,i32 -> i32)
-     */
-    string_matches(
-      ptr: number,
-      len: number,
-      patPtr: number,
-      patLen: number
-    ): number {
+    // Compile-time pattern IDs: 0=email 1=url 2=uuid 3=phone 4=date 5=integer 6=number 7=alphanumeric
+    string_matches(ptr: number, len: number, patternId: number): number {
       const state = getState();
       const str = readString(state, ptr, len);
-      const pat = readString(state, patPtr, patLen);
-      try {
-        return new RegExp(pat).test(str) ? 1 : 0;
-      } catch {
-        return 0;
-      }
+      const patterns: RegExp[] = [
+        /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+        /^https?:\/\/[^\s$.?#].[^\s]*$/i,
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+        /^\+?[\d\s\-(). ]{7,}$/,
+        /^\d{4}-\d{2}-\d{2}$/,
+        /^-?\d+$/,
+        /^-?\d+(\.\d+)?$/,
+        /^[a-zA-Z0-9]+$/,
+      ];
+      const pattern = patterns[patternId];
+      return pattern !== undefined && pattern.test(str) ? 1 : 0;
     },
   };
 }

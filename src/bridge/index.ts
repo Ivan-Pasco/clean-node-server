@@ -20,6 +20,7 @@ import { createListBridge } from './list';
 import { createMigrationBridge } from './migration';
 import { createUiBridge, createUiClientStubs } from './ui';
 import { createMcpBridge } from './mcp';
+import { createTestBridge } from './test';
 import { readString, writeString } from './helpers';
 
 /**
@@ -51,6 +52,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const uiBridge = createUiBridge(getState);
   const uiClientStubs = createUiClientStubs();
   const mcpBridge = createMcpBridge(getState);
+  const testBridge = createTestBridge(getState);
 
   // Assemble the env module with all bridge functions.
   // The compiler (v0.30.123+) emits only canonical _namespace_fn import names.
@@ -168,6 +170,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       string_char_at: stringBridge.string_char_at,
       string_repeat: stringBridge.string_repeat,
       string_matches: stringBridge.string_matches,
+      'string.matches': stringBridge.string_matches,
       string_pad_start: stringBridge.string_pad_start,
       string_pad_end: stringBridge.string_pad_end,
       // HTML encoding
@@ -378,6 +381,11 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _mcp_sse_send: mcpBridge._mcp_sse_send,
       _mcp_log: mcpBridge._mcp_log,
 
+      // Test infrastructure (Layer 3 — in-process request dispatch for endpoint tests)
+      _test_http_request: testBridge._test_http_request,
+      _test_response_status: testBridge._test_response_status,
+      _test_response_body: testBridge._test_response_body,
+
       // State reset functions (emitted by compiler 0.30.155+ in every module)
       // No-op for bump-allocator runtime; required to satisfy WASM instantiation.
       _state_reset_all(): void {},
@@ -420,3 +428,4 @@ export { createListBridge, getListStore, resetListStore } from './list';
 export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
 export { createUiBridge, createUiClientStubs } from './ui';
 export { createMcpBridge } from './mcp';
+export { createTestBridge, resetTestBridge } from './test';
