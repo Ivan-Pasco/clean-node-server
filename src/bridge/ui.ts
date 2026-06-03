@@ -21,11 +21,6 @@ function getProjectRoot(state: WasmState): string {
 // but the linker requires all declared imports to be satisfied.
 function noop(): number { return 0; }
 
-// Converts a camelCase suffix to snake_case (e.g. "setState" → "set_state").
-function camelToSnake(s: string): string {
-  return s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-}
-
 /**
  * No-op stubs for all frame.ui client-side bridge functions.
  *
@@ -179,9 +174,6 @@ export function createUiClientStubs(): Record<string, () => number> {
     'ui.queryAll': noop,
     'ui.getComputedStyle': noop,
 
-    // DOM patching dot-notation (§FEXT-5)
-    'ui.patch': noop,
-
     // iframe communication dot-notation (§FEXT-3)
     'ui.iframeSend': noop,
     'ui.iframeOnMessage': noop,
@@ -193,18 +185,6 @@ export function createUiClientStubs(): Record<string, () => number> {
     'ui.getDragData': noop,
     'ui.eventDataJson': noop,
   };
-
-  // Auto-generate snake_case aliases for all ui.* dot-notation entries.
-  // Iterates the camelCase keys already present and fills in any missing
-  // snake_case variant so that both naming conventions are always covered.
-  for (const key of Object.keys(stubs)) {
-    if (key.startsWith('ui.')) {
-      const snakeKey = `ui.${camelToSnake(key.slice(3))}`;
-      if (!(snakeKey in stubs)) {
-        stubs[snakeKey] = noop;
-      }
-    }
-  }
 
   return stubs;
 }

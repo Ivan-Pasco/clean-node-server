@@ -343,6 +343,18 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
+     * Set Content-Disposition: attachment header for file downloads
+     */
+    _res_download(filenamePtr: number, filenameLen: number): void {
+      const state = getState();
+      const filename = readString(state, filenamePtr, filenameLen);
+      const value = filename
+        ? `attachment; filename="${filename.replace(/"/g, '\\"')}"`
+        : 'attachment';
+      state.response.headers['Content-Disposition'] = sanitizeHeaderValue(value);
+    },
+
+    /**
      * Serialize to JSON string
      */
     _json_encode(value_ptr: number, value_len: number): number {
