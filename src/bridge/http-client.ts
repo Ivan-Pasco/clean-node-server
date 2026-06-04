@@ -308,5 +308,11 @@ export function createHttpClientBridge(getState: () => WasmState) {
       const value = state.httpClient.lastResponse?.headers[name] || '';
       return writeString(state, value);
     },
+
+    http_get_response_body(): number {
+      const state = getState();
+      const body = state.httpClient.lastResponse?.body || '';
+      return writeString(state, body);
+    },
   };
 }

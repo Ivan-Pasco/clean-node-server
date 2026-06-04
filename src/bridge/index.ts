@@ -19,6 +19,7 @@ import { createArrayBridge } from './array';
 import { createListBridge } from './list';
 import { createMigrationBridge } from './migration';
 import { createUiBridge, createUiClientStubs } from './ui';
+import { createCanvasClientStubs } from './canvas-stubs';
 import { createSseBridge } from './sse';
 import { createMcpBridge } from './mcp';
 import { createTestBridge } from './test';
@@ -53,6 +54,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const migrationBridge = createMigrationBridge(getState);
   const uiBridge = createUiBridge(getState);
   const uiClientStubs = createUiClientStubs();
+  const canvasClientStubs = createCanvasClientStubs(getState);
   const sseBridge = createSseBridge(getState);
   const mcpBridge = createMcpBridge(getState);
   const testBridge = createTestBridge(getState);
@@ -237,6 +239,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       http_get_response_code: httpClientBridge.http_get_response_code,
       http_get_response_headers: httpClientBridge.http_get_response_headers,
       http_get_response_header: httpClientBridge.http_get_response_header,
+      http_get_response_body: httpClientBridge.http_get_response_body,
       http_encode_url: (ptr: number, len: number) => {
         const state = getState();
         const str = readString(state, ptr, len);
@@ -393,6 +396,12 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // in server builds; stubs satisfy the linker — they are never called at runtime)
       ...uiClientStubs,
 
+      // Canvas client-side no-op stubs (frame.canvas is browser-only; modules with
+      // canvasScene: blocks emit imports for all 238 _canvas_*/_input_*/_audio_*/
+      // _sprite_*/_anim_*/_tween_*/_timeline_*/_scene_*/_camera_*/_ease_* etc.
+      // bridge functions regardless of whether they ultimately run server-side)
+      ...canvasClientStubs,
+
       // MCP bridge functions
       _mcp_stdio_read: mcpBridge._mcp_stdio_read,
       _mcp_stdio_write: mcpBridge._mcp_stdio_write,
@@ -447,6 +456,7 @@ export { createArrayBridge, getArrayStore, resetArrayStore } from './array';
 export { createListBridge, getListStore, resetListStore } from './list';
 export { createMigrationBridge, resetRegisteredMigrations, getRegisteredMigrations } from './migration';
 export { createUiBridge, createUiClientStubs } from './ui';
+export { createCanvasClientStubs } from './canvas-stubs';
 export { createSseBridge } from './sse';
 export { createMcpBridge } from './mcp';
 export { createTestBridge, resetTestBridge } from './test';
