@@ -59,6 +59,26 @@ export class RouteRegistry {
   }
 
   /**
+   * Register a static redirect route.
+   * Called by the _http_redirect_route bridge function during WASM start().
+   * Requests matching this route are redirected without invoking any WASM handler.
+   */
+  registerRedirect(method: string, pattern: string, to: string, status: number): void {
+    const { regex, paramNames } = this.compilePattern(pattern);
+    const handlerIndex = this.registrationCounter++;
+    this.routes.push({
+      method: method.toUpperCase(),
+      pattern,
+      regex,
+      paramNames,
+      handlerIndex,
+      isProtected: false,
+      redirectTo: to,
+      redirectStatus: status,
+    });
+  }
+
+  /**
    * Register an SSE (Server-Sent Events) stream route.
    * Called by the _http_sse_route bridge function during WASM start().
    * The handlerName is the exported WASM function name to call for this route.

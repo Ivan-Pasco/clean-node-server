@@ -80,6 +80,33 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
+     * Register a static redirect route.
+     * Signature (from function-registry.toml layer=3):
+     *   (method_ptr, method_len, from_ptr, from_len, to_ptr, to_len, status) -> i32
+     * Requests matching this route are redirected without invoking any WASM handler.
+     */
+    _http_redirect_route(
+      methodPtr: number,
+      methodLen: number,
+      fromPtr: number,
+      fromLen: number,
+      toPtr: number,
+      toLen: number,
+      status: number
+    ): number {
+      const state = getState();
+      const method = readString(state, methodPtr, methodLen);
+      const from = readString(state, fromPtr, fromLen);
+      const to = readString(state, toPtr, toLen);
+
+      const registry = getRouteRegistry();
+      registry.registerRedirect(method, from, to, status);
+
+      log(state, 'HTTP', `Redirect route registered: ${method} ${from} -> ${to} (${status})`);
+      return 0;
+    },
+
+    /**
      * Register a Server-Sent Events (STREAM) route.
      * The handler is identified by its exported WASM function name, not a table index.
      * The SSE worker calls exports[handlerName]() when a request arrives.

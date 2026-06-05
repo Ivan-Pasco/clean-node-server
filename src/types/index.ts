@@ -50,6 +50,8 @@ export interface RouteHandler {
   requiredRole?: string;
   isSse?: boolean;
   sseHandlerName?: string;
+  redirectTo?: string;
+  redirectStatus?: number;
 }
 
 /**

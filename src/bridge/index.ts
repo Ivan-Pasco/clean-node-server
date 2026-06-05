@@ -286,6 +286,8 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _json_get: httpServerBridge._json_get,
       // SSE route registration
       _http_sse_route: httpServerBridge._http_sse_route,
+      // Static redirect route registration (replaces the synthetic handler approach)
+      _http_redirect_route: httpServerBridge._http_redirect_route,
 
       // SSE bridge functions (fully implemented — backed by sse-worker thread)
       _sse_emit: sseBridge._sse_emit,

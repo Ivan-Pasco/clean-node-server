@@ -267,6 +267,17 @@ export class CleanNodeServer {
       sessionId: req.cookies?.session_id,
     };
 
+    // Static redirect routes are resolved immediately — no WASM handler needed.
+    if (route.redirectTo) {
+      const status = route.redirectStatus ?? 302;
+      res.setHeader('Location', route.redirectTo);
+      res.status(status).end();
+      const durationSec = Number(process.hrtime.bigint() - startNs) / 1e9;
+      httpRequestsTotal.inc({ method: req.method, route: routeLabel, status_code: status });
+      httpRequestDuration.observe({ method: req.method, route: routeLabel }, durationSec);
+      return;
+    }
+
     // SSE routes bypass the worker pool and run in a dedicated per-connection worker.
     if (route.isSse) {
       return this.handleSseRequest(req, res, route, context);
