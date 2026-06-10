@@ -3,6 +3,359 @@ import * as path from 'path';
 import { WasmState } from '../types';
 import { readString, writeString, log } from './helpers';
 
+function getNestedValue(data: unknown, path: string): unknown {
+  let current: unknown = data;
+  for (const part of path.split('.')) {
+    if (current === null || current === undefined || typeof current !== 'object') {
+      return undefined;
+    }
+    current = (current as Record<string, unknown>)[part];
+  }
+  return current;
+}
+
+function evaluateCondition(condition: string, data: unknown): boolean {
+  const value = getNestedValue(data, condition.trim());
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') return value.length > 0;
+  if (typeof value === 'number') return value !== 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value as object).length > 0;
+  return false;
+}
+
+function findTagStart(html: string, attrPos: number): number | null {
+  const before = html.slice(0, attrPos);
+  const idx = before.lastIndexOf('<');
+  return idx === -1 ? null : idx;
+}
+
+function extractTagName(html: string, tagStart: number): string {
+  const after = html.slice(tagStart + 1);
+  const match = after.match(/^[A-Za-z][A-Za-z0-9-]*/);
+  return match ? match[0] : '';
+}
+
+/**
+ * Find the end position (exclusive) of the element starting at tagStart.
+ * Handles nesting by counting open/close pairs for tagName.
+ */
+function findElementEnd(html: string, tagStart: number, tagName: string): number | null {
+  const openPattern = `<${tagName}`;
+  const closePattern = `</${tagName}>`;
+
+  const firstClose = html.indexOf('>', tagStart);
+  if (firstClose === -1) return null;
+  // Self-closing tag (e.g. <input/>) — element ends right after '>'
+  if (html[firstClose - 1] === '/') return firstClose + 1;
+
+  let depth = 1;
+  let pos = firstClose + 1;
+
+  while (pos < html.length) {
+    const nextOpen = html.indexOf(openPattern, pos);
+    const nextClose = html.indexOf(closePattern, pos);
+
+    if (nextClose === -1) return null;
+
+    if (nextOpen !== -1 && nextOpen < nextClose) {
+      // Make sure the "open" is actually a new tag and not a substring match
+      const after = html.charAt(nextOpen + openPattern.length);
+      if (after === ' ' || after === '>' || after === '/' || after === '\t' || after === '\n') {
+        depth += 1;
+      }
+      pos = nextOpen + openPattern.length;
+    } else {
+      depth -= 1;
+      if (depth === 0) return nextClose + closePattern.length;
+      pos = nextClose + closePattern.length;
+    }
+  }
+  return null;
+}
+
+function processIterateDirective(html: string, data: unknown): string {
+  const MARKER = ' cl-iterate="';
+  let result = html;
+
+  while (true) {
+    const attrPos = result.indexOf(MARKER);
+    if (attrPos === -1) break;
+
+    const tagStart = findTagStart(result, attrPos);
+    if (tagStart === null) break;
+
+    const tagName = extractTagName(result, tagStart);
+    if (!tagName) break;
+
+    const valStart = attrPos + MARKER.length;
+    const valEnd = result.indexOf('"', valStart);
+    if (valEnd === -1) break;
+    const attrValue = result.slice(valStart, valEnd);
+
+    const parts = attrValue.split(/\s+/);
+    if (parts.length !== 3 || parts[1] !== 'in') break;
+    const itemVar = parts[0];
+    const arrayPath = parts[2];
+
+    const elementEnd = findElementEnd(result, tagStart, tagName);
+    if (elementEnd === null) break;
+
+    const openTagEnd = result.indexOf('>', tagStart);
+    if (openTagEnd === -1) break;
+    const innerStart = openTagEnd + 1;
+    const innerEnd = elementEnd - (tagName.length + 3); // </name>
+    const inner = result.slice(innerStart, innerEnd);
+
+    const items = getNestedValue(data, arrayPath);
+    const array: unknown[] = Array.isArray(items) ? items : [];
+
+    let expanded = '';
+    for (const item of array) {
+      let itemHtml = inner;
+      if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+        for (const [field, value] of Object.entries(item as Record<string, unknown>)) {
+          const placeholder = `{${itemVar}.${field}}`;
+          const replacement =
+            value === null || value === undefined ? '' : String(value);
+          itemHtml = itemHtml.split(placeholder).join(replacement);
+        }
+      }
+      const scalarPlaceholder = `{${itemVar}}`;
+      const scalar =
+        item === null || item === undefined ? '' : String(item);
+      itemHtml = itemHtml.split(scalarPlaceholder).join(scalar);
+      expanded += itemHtml;
+    }
+
+    result = result.slice(0, tagStart) + expanded + result.slice(elementEnd);
+  }
+
+  return result;
+}
+
+function processIfDirective(html: string, data: unknown): string {
+  const MARKER = ' cl-if="';
+  let result = html;
+
+  while (true) {
+    const attrPos = result.indexOf(MARKER);
+    if (attrPos === -1) break;
+
+    const tagStart = findTagStart(result, attrPos);
+    if (tagStart === null) break;
+    const tagName = extractTagName(result, tagStart);
+    if (!tagName) break;
+
+    const valStart = attrPos + MARKER.length;
+    const valEnd = result.indexOf('"', valStart);
+    if (valEnd === -1) break;
+    const condition = result.slice(valStart, valEnd);
+    const isTruthy = evaluateCondition(condition, data);
+
+    const elementEnd = findElementEnd(result, tagStart, tagName);
+    if (elementEnd === null) break;
+    const attrFull = ` cl-if="${condition}"`;
+
+    // Check for a cl-else sibling element immediately following (ignoring whitespace)
+    const after = result.slice(elementEnd);
+    const trimmedStart = elementEnd + (after.length - after.trimStart().length);
+    const rest = result.slice(trimmedStart);
+    let hasElse = false;
+    if (rest.startsWith('<')) {
+      const tagEnd = rest.indexOf('>');
+      if (tagEnd !== -1 && rest.slice(0, tagEnd).includes(' cl-else')) {
+        hasElse = true;
+      }
+    }
+
+    let keep: string;
+    let totalEnd: number;
+
+    if (hasElse) {
+      const elseTagStart = trimmedStart;
+      const elseTagName = extractTagName(result, elseTagStart);
+      const elseElementEnd = findElementEnd(result, elseTagStart, elseTagName) ?? elseTagStart;
+
+      if (isTruthy) {
+        // Keep the full element with attrs (minus cl-if), drop the cl-else sibling
+        keep = result.slice(tagStart, elementEnd).replace(attrFull, '');
+        totalEnd = elseElementEnd;
+      } else {
+        // Drop the cl-if element, keep the cl-else sibling (minus cl-else attr)
+        keep = result.slice(elseTagStart, elseElementEnd).replace(' cl-else', '');
+        totalEnd = elseElementEnd;
+      }
+    } else if (isTruthy) {
+      // SRV-CLIF-STRIP fix: keep the full element + attrs, only strip the cl-if attribute
+      keep = result.slice(tagStart, elementEnd).replace(attrFull, '');
+      totalEnd = elementEnd;
+    } else {
+      keep = '';
+      totalEnd = elementEnd;
+    }
+
+    result = result.slice(0, tagStart) + keep + result.slice(totalEnd);
+  }
+
+  return result;
+}
+
+function processShowDirective(html: string, data: unknown): string {
+  const MARKER = ' cl-show="';
+  let result = html;
+
+  while (true) {
+    const attrPos = result.indexOf(MARKER);
+    if (attrPos === -1) break;
+
+    const valStart = attrPos + MARKER.length;
+    const valEnd = result.indexOf('"', valStart);
+    if (valEnd === -1) break;
+    const condition = result.slice(valStart, valEnd);
+    const isTruthy = evaluateCondition(condition, data);
+
+    const attrFull = ` cl-show="${condition}"`;
+    if (isTruthy) {
+      result = result.replace(attrFull, '');
+      continue;
+    }
+
+    const tagStart = findTagStart(result, attrPos);
+    if (tagStart === null) break;
+    const tagEnd = result.indexOf('>', tagStart);
+    if (tagEnd === -1) break;
+    const openingTag = result.slice(tagStart, tagEnd + 1);
+    let newTag: string;
+    if (openingTag.includes('style="')) {
+      newTag = openingTag
+        .replace(attrFull, '')
+        .replace('style="', 'style="display:none;');
+    } else {
+      newTag = openingTag
+        .replace(attrFull, '')
+        .replace('>', ' style="display:none;">');
+    }
+    result = result.slice(0, tagStart) + newTag + result.slice(tagEnd + 1);
+  }
+
+  return result;
+}
+
+function processDirectives(html: string, data: unknown): string {
+  let result = processIterateDirective(html, data);
+  result = processIfDirective(result, data);
+  result = processShowDirective(result, data);
+  return result;
+}
+
+function extractAttrValueFromTag(tag: string, attr: string): string | undefined {
+  const search = `${attr}="`;
+  const start = tag.indexOf(search);
+  if (start === -1) return undefined;
+  const valStart = start + search.length;
+  const valEnd = tag.indexOf('"', valStart);
+  if (valEnd === -1) return undefined;
+  return tag.slice(valStart, valEnd);
+}
+
+/**
+ * Replace custom component element tags with their registered server-side HTML.
+ *
+ * For each <tag-name [attrs]>...</tag-name> where tag-name contains a hyphen:
+ * - Registered: emit <div data-island="tag-name" data-client="MODE">HTML</div>
+ * - Unregistered with client= attr: emit <div data-island=...></div> wrapper
+ * - Otherwise leave unchanged.
+ */
+function expandComponentTags(html: string, registry: Map<string, string>): string {
+  let result = html;
+  let offset = 0;
+
+  while (true) {
+    const remaining = result.slice(offset);
+    const relOpen = remaining.indexOf('<');
+    if (relOpen === -1) break;
+    const absOpen = offset + relOpen;
+
+    const afterOpen = result.slice(absOpen + 1);
+    const tagEndInName = afterOpen.search(/[ \t\n>/]/);
+    if (tagEndInName === -1) {
+      offset = absOpen + 1;
+      continue;
+    }
+    const tagName = afterOpen.slice(0, tagEndInName).trim();
+
+    if (!tagName.includes('-') || tagName.startsWith('/')) {
+      offset = absOpen + 1;
+      continue;
+    }
+
+    const closeBracket = result.indexOf('>', absOpen);
+    if (closeBracket === -1) {
+      offset = absOpen + 1;
+      continue;
+    }
+
+    const openingTag = result.slice(absOpen, closeBracket + 1);
+    const selfClosing = openingTag.endsWith('/>');
+    const clientVal = extractAttrValueFromTag(openingTag, 'client');
+
+    let innerHtml = '';
+    let elementEnd: number;
+    if (selfClosing) {
+      elementEnd = closeBracket + 1;
+    } else {
+      const closeTag = `</${tagName}>`;
+      const rel = result.indexOf(closeTag, closeBracket + 1);
+      if (rel === -1) {
+        offset = absOpen + 1;
+        continue;
+      }
+      innerHtml = result.slice(closeBracket + 1, rel);
+      elementEnd = rel + closeTag.length;
+    }
+
+    let replacement: string;
+    const registered = registry.get(tagName);
+    if (registered !== undefined) {
+      const mode = clientVal ?? 'on';
+      replacement = `<div data-island="${tagName}" data-client="${mode}">${registered}</div>`;
+    } else if (clientVal !== undefined) {
+      replacement = `<div data-island="${tagName}" data-client="${clientVal}">${innerHtml}</div>`;
+    } else {
+      offset = absOpen + 1;
+      continue;
+    }
+
+    result = result.slice(0, absOpen) + replacement + result.slice(elementEnd);
+    offset = absOpen + replacement.length;
+  }
+
+  return result;
+}
+
+/**
+ * Inject the frame.ui runtime loader <script src="/loader.js" defer></script> into
+ * the rendered document when at least one hydration island wrapper is present.
+ *
+ * Idempotent: documents already referencing /loader.js are returned unchanged.
+ * Placement: inserted before the last </body> tag (case-insensitive); if no
+ * </body> exists, appended to the end of the document.
+ */
+function injectLoaderScript(html: string): string {
+  if (!html.includes('data-island="')) return html;
+  if (html.includes('/loader.js')) return html;
+
+  const SCRIPT_TAG = '<script src="/loader.js" defer></script>';
+  const lower = html.toLowerCase();
+  const pos = lower.lastIndexOf('</body>');
+  if (pos !== -1) {
+    return html.slice(0, pos) + SCRIPT_TAG + html.slice(pos);
+  }
+  return html + SCRIPT_TAG;
+}
+
 /**
  * Resolve the project root for layout loading.
  *
@@ -326,13 +679,50 @@ export function createUiBridge(getState: () => WasmState) {
         }
       }
 
-      const rendered = template.replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => {
-        const value = (data as Record<string, unknown>)[key];
+      const substituted = template.replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => {
+        const value = getNestedValue(data, key);
         return value !== undefined && value !== null ? String(value) : '';
       });
 
+      const withDirectives = processDirectives(substituted, data);
+
+      const registry = state.componentRegistry ?? new Map<string, string>();
+      const withComponents = expandComponentTags(withDirectives, registry);
+
+      const rendered = injectLoaderScript(withComponents);
+
       log(state, 'UI', `Rendered page '${pagePath}' (${rendered.length} bytes)`);
       return writeString(state, rendered);
+    },
+
+    /**
+     * Register a component's server-side HTML template.
+     *
+     * Called by the frame.ui plugin during WASM init so that _ui_render_page can
+     * expand custom element tags (e.g. <my-widget>) into <div data-island> wrappers
+     * with the registered HTML as inner content.
+     *
+     * @returns 1 on success, 0 on error
+     */
+    _ui_register_component_html(
+      tagPtr: number,
+      tagLen: number,
+      htmlPtr: number,
+      htmlLen: number
+    ): number {
+      const state = getState();
+      const tag = readString(state, tagPtr, tagLen);
+      if (!tag) {
+        log(state, 'UI', '_ui_register_component_html: empty or missing tag name');
+        return 0;
+      }
+      const html = readString(state, htmlPtr, htmlLen);
+      if (!state.componentRegistry) {
+        state.componentRegistry = new Map<string, string>();
+      }
+      state.componentRegistry.set(tag, html);
+      log(state, 'UI', `_ui_register_component_html: registered <${tag}>`);
+      return 1;
     },
 
     /**

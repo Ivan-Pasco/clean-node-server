@@ -1,5 +1,6 @@
 import * as http from 'http';
 import * as https from 'https';
+import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { Worker } from 'worker_threads';
@@ -169,6 +170,43 @@ export class CleanNodeServer {
           total: pool.totalWorkers,
         } : undefined,
       });
+    });
+
+    // Frame.ui client runtime: serve loader.js from the installed plugin,
+    // falling back to an embedded no-op stub. Cached for 1 hour.
+    const loaderJs = loadRuntimeLoaderJs();
+    this.app.get('/loader.js', (_req: Request, res: Response) => {
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      // Override the security middleware's no-cache headers
+      res.removeHeader('Pragma');
+      res.removeHeader('Expires');
+      res.status(200).send(loaderJs);
+    });
+
+    // Frame.ui client hydration WASM. Look next to the main WASM first (where
+    // cln build emits it), then fall back to CWD and ./public for compatibility.
+    const frontendWasmPath = resolveFrontendWasmPath(this.loader.getPath());
+    this.app.get('/frontend.wasm', (_req: Request, res: Response) => {
+      const resolved = frontendWasmPath ?? findFrontendWasmFallback();
+      if (!resolved) {
+        res.status(404)
+          .set('Content-Type', 'text/plain')
+          .send('frontend.wasm not found — compile client components to generate it');
+        return;
+      }
+      try {
+        const bytes = fs.readFileSync(resolved);
+        res.setHeader('Content-Type', 'application/wasm');
+        res.setHeader('Cache-Control', 'public, max-age=60');
+        res.removeHeader('Pragma');
+        res.removeHeader('Expires');
+        res.status(200).send(bytes);
+      } catch (err) {
+        res.status(404)
+          .set('Content-Type', 'text/plain')
+          .send(`frontend.wasm read failed: ${(err as Error).message}`);
+      }
     });
 
     // Prometheus metrics endpoint.
@@ -490,3 +528,45 @@ export class CleanNodeServer {
   }
 }
 
+/**
+ * Embedded loader.js stub served when the frame.ui plugin runtime is not installed.
+ *
+ * Boots hydration for [data-island][data-client] elements by fetching
+ * /islands-manifest.json and (TODO: also instantiating /frontend.wasm exports).
+ * The full implementation lives in the frame.ui plugin runtime; this stub keeps
+ * the route serving valid JS so dev environments don't 404.
+ */
+const LOADER_JS_STUB = `(function(){'use strict';
+var islands=document.querySelectorAll('[data-island][data-client]');
+if(islands.length===0)return;
+console.warn('[frame.ui] loader stub active — install frame.ui runtime for full hydration');
+})();`;
+
+function loadRuntimeLoaderJs(): string {
+  const home = process.env.HOME || os.homedir();
+  if (!home) return LOADER_JS_STUB;
+  const candidatePath = path.join(home, '.cleen', 'plugins', 'frame.ui', 'runtime', 'loader.js');
+  try {
+    return fs.readFileSync(candidatePath, 'utf8');
+  } catch {
+    return LOADER_JS_STUB;
+  }
+}
+
+function resolveFrontendWasmPath(mainWasmPath: string): string | undefined {
+  const sibling = path.join(path.dirname(mainWasmPath), 'frontend.wasm');
+  if (fs.existsSync(sibling)) return sibling;
+  return undefined;
+}
+
+function findFrontendWasmFallback(): string | undefined {
+  const candidates = [
+    path.join(process.cwd(), 'frontend.wasm'),
+    path.join(process.cwd(), 'public', 'frontend.wasm'),
+    path.join(process.cwd(), 'dist', 'frontend.wasm'),
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return undefined;
+}

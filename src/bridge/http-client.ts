@@ -268,6 +268,61 @@ export function createHttpClientBridge(getState: () => WasmState) {
       return writeString(state, resp.body);
     },
 
+    http_put_with_headers(
+      urlPtr: number, urlLen: number,
+      bodyPtr: number, bodyLen: number,
+      headersPtr: number, headersLen: number
+    ): number {
+      const state = getState();
+      if (!state.httpWorker) return noWorkerError(state);
+      const url = readString(state, urlPtr, urlLen);
+      const body = readString(state, bodyPtr, bodyLen);
+      const headersJson = readString(state, headersPtr, headersLen);
+      let headers: Record<string, string> = {};
+      try { headers = JSON.parse(headersJson) as Record<string, string>; } catch { /* use empty */ }
+      log(state, 'HTTP', `PUT ${url} (with headers)`);
+      const resp = state.httpWorker.request(buildWorkerRequest('PUT', url, state, body, headers));
+      state.httpClient.lastResponse = { status: resp.status, headers: resp.headers, body: resp.body };
+      applyCookieUpdates(state, resp.updatedCookies);
+      return writeString(state, resp.body);
+    },
+
+    http_patch_with_headers(
+      urlPtr: number, urlLen: number,
+      bodyPtr: number, bodyLen: number,
+      headersPtr: number, headersLen: number
+    ): number {
+      const state = getState();
+      if (!state.httpWorker) return noWorkerError(state);
+      const url = readString(state, urlPtr, urlLen);
+      const body = readString(state, bodyPtr, bodyLen);
+      const headersJson = readString(state, headersPtr, headersLen);
+      let headers: Record<string, string> = {};
+      try { headers = JSON.parse(headersJson) as Record<string, string>; } catch { /* use empty */ }
+      log(state, 'HTTP', `PATCH ${url} (with headers)`);
+      const resp = state.httpWorker.request(buildWorkerRequest('PATCH', url, state, body, headers));
+      state.httpClient.lastResponse = { status: resp.status, headers: resp.headers, body: resp.body };
+      applyCookieUpdates(state, resp.updatedCookies);
+      return writeString(state, resp.body);
+    },
+
+    http_delete_with_headers(
+      urlPtr: number, urlLen: number,
+      headersPtr: number, headersLen: number
+    ): number {
+      const state = getState();
+      if (!state.httpWorker) return noWorkerError(state);
+      const url = readString(state, urlPtr, urlLen);
+      const headersJson = readString(state, headersPtr, headersLen);
+      let headers: Record<string, string> = {};
+      try { headers = JSON.parse(headersJson) as Record<string, string>; } catch { /* use empty */ }
+      log(state, 'HTTP', `DELETE ${url} (with headers)`);
+      const resp = state.httpWorker.request(buildWorkerRequest('DELETE', url, state, undefined, headers));
+      state.httpClient.lastResponse = { status: resp.status, headers: resp.headers, body: resp.body };
+      applyCookieUpdates(state, resp.updatedCookies);
+      return writeString(state, resp.body);
+    },
+
     http_set_timeout(timeoutMs: number): void {
       getState().httpClient.timeout = timeoutMs;
     },

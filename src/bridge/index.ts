@@ -228,6 +228,12 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       http_options: httpClientBridge.http_options,
       http_get_with_headers: httpClientBridge.http_get_with_headers,
       http_post_with_headers: httpClientBridge.http_post_with_headers,
+      http_put_with_headers: httpClientBridge.http_put_with_headers,
+      http_patch_with_headers: httpClientBridge.http_patch_with_headers,
+      http_delete_with_headers: httpClientBridge.http_delete_with_headers,
+      _http_put_with_headers: httpClientBridge.http_put_with_headers,
+      _http_patch_with_headers: httpClientBridge.http_patch_with_headers,
+      _http_delete_with_headers: httpClientBridge.http_delete_with_headers,
       http_post_json: httpClientBridge.http_post_json,
       http_put_json: httpClientBridge.http_put_json,
       http_patch_json: httpClientBridge.http_patch_json,
@@ -393,6 +399,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _ui_render_page: uiBridge._ui_render_page,
       _ui_inject_head_css: uiBridge._ui_inject_head_css,
       _ui_inject_head_link: uiBridge._ui_inject_head_link,
+      _ui_register_component_html: uiBridge._ui_register_component_html,
 
       // UI client-side no-op stubs (frame.ui declares these as WASM imports even
       // in server builds; stubs satisfy the linker — they are never called at runtime)
@@ -421,6 +428,24 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // No-op for bump-allocator runtime; required to satisfy WASM instantiation.
       _state_reset_all(): void {},
       _state_reset_named(_namePtr: number): void {},
+
+      // Runtime error reporting from compiled modules.
+      // LP-format signature (ptr, len) matches RUNTIME001 fix in clean-server (2c43399).
+      // Reads the message and logs to stderr; the request continues so the WASM
+      // handler can still produce a response after raising an error.
+      error(msgPtr: number, msgLen: number): void {
+        if (msgLen <= 0) {
+          console.error('[WASM error] <empty message>');
+          return;
+        }
+        try {
+          const state = getState();
+          const msg = readString(state, msgPtr, msgLen);
+          console.error(`[WASM error] ${msg}`);
+        } catch (err) {
+          console.error(`[WASM error] <failed to read message: ${(err as Error).message}>`);
+        }
+      },
 
       // Memory management stubs
       __stack_pointer: new WebAssembly.Global(

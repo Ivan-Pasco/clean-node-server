@@ -184,6 +184,7 @@ export interface WasmState {
   injectedCss?: string[];
   injectedLinks?: string[];
   projectRoot?: string;
+  componentRegistry?: Map<string, string>;
   memoryStats: MemoryStats;
   httpClient: HttpClientState;
   httpWorker?: SyncHttpWorker;
