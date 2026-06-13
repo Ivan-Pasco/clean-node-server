@@ -347,7 +347,7 @@ function injectLoaderScript(html: string): string {
   if (!html.includes('data-island="')) return html;
   if (html.includes('/loader.js')) return html;
 
-  const SCRIPT_TAG = '<script src="/loader.js" defer></script>';
+  const SCRIPT_TAG = '<script src="/loader.js" defer data-wasm="/frontend.wasm"></script>';
   const lower = html.toLowerCase();
   const pos = lower.lastIndexOf('</body>');
   if (pos !== -1) {
