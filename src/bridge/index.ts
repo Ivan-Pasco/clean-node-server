@@ -24,6 +24,7 @@ import { createSseBridge } from './sse';
 import { createMcpBridge } from './mcp';
 import { createTestBridge } from './test';
 import { createEmailBridge } from './email';
+import { createI18nBridge } from './i18n';
 import { readString, writeString } from './helpers';
 
 /**
@@ -59,6 +60,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const mcpBridge = createMcpBridge(getState);
   const testBridge = createTestBridge(getState);
   const emailBridge = createEmailBridge(getState);
+  const i18nBridge = createI18nBridge(getState);
 
   // Assemble the env module with all bridge functions.
   // The compiler (v0.30.123+) emits only canonical _namespace_fn import names.
@@ -318,6 +320,9 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _email_send: emailBridge._email_send,
       _email_last_error: emailBridge._email_last_error,
 
+      // i18n bridge (stubs — see ./i18n.ts for porting status)
+      ...i18nBridge,
+
       // Async bridge functions
       _async_fire(fnNamePtr: number, fnNameLen: number, _argsPtr: number, _argsLen: number): void {
         const state = getState();
@@ -488,3 +493,4 @@ export { createSseBridge } from './sse';
 export { createMcpBridge } from './mcp';
 export { createTestBridge, resetTestBridge } from './test';
 export { createEmailBridge } from './email';
+export { createI18nBridge } from './i18n';

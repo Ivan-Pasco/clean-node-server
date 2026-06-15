@@ -477,6 +477,36 @@ export function createUiClientStubs(): Record<string, () => number> {
     _ui_get_drag_data: noop,
     _ui_event_data_json: noop,
 
+    // Compiler-owned build_state keystore — no-op at runtime
+    // (registered at compile time by WasmPluginAdapter; runtime stub exists
+    // so WASM modules referencing them can instantiate)
+    _build_state_get: noop,
+    _build_state_set: noop,
+
+    // Browser storage (localStorage / sessionStorage) — no-op on server
+    _storage_local_get: noop,
+    _storage_local_set: noop,
+    _storage_local_remove: noop,
+    _storage_local_clear: noop,
+    _storage_session_get: noop,
+    _storage_session_set: noop,
+    _storage_session_remove: noop,
+    _storage_session_clear: noop,
+
+    // Focus / selection / CSS-var helpers — no-op on server
+    _ui_focus: noop,
+    _ui_blur: noop,
+    _ui_get_focus: noop,
+    _ui_get_selection: noop,
+    _ui_insert_at_cursor: noop,
+    _ui_text_diff: noop,
+    _ui_set_css_var: noop,
+    _ui_set_css_var_on: noop,
+    _ui_get_css_var: noop,
+    _ui_apply_css_vars: noop,
+    _ui_current_path: noop,
+    _ui_form_submit: noop,
+
     // Dot-notation camelCase entries (compiler may generate these).
     // snake_case aliases are generated automatically below.
     'ui.registerComponent': noop,
