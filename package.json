@@ -1,6 +1,6 @@
 {
   "name": "@ivan-pasco/clean-node-server",
-  "version": "0.1.49",
+  "version": "0.1.50",
   "description": "Node.js host bridge for Clean Language WASM modules",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -70,9 +70,11 @@
     "@types/node": "^20.11.5",
     "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.10.9",
+    "@types/ws": "^8.18.1",
     "ts-node": "^10.9.2",
     "typescript": "^5.3.3",
-    "vitest": "^2.0.0"
+    "vitest": "^2.0.0",
+    "ws": "^8.21.0"
   },
   "engines": {
     "node": ">=18.0.0"

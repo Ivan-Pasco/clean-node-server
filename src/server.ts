@@ -25,6 +25,9 @@ import { setRequestContext, getResponse } from './wasm/state';
 import { RouteRegistry, parseUrl } from './router';
 import { createBridgeImports } from './bridge';
 import { getRouteRegistry, setRouteRegistry, getConfiguredPort } from './bridge/http-server';
+import { startScheduler, stopScheduler } from './bridge/schedule';
+import { startJobWorker, stopJobWorker } from './bridge/jobs';
+import { attachWebsocketServer, stopWebsocketServer } from './bridge/websocket';
 import { readLengthPrefixedString, preGrowMemory } from './wasm/memory';
 import { getSandboxRoot } from './bridge/file';
 import type { SseWorkerInit, SseWorkerOutbound } from './workers/worker-types';
@@ -55,6 +58,9 @@ export class CleanNodeServer {
   private requestPool: RequestWorkerPool | null = null;
   private httpWorker: SyncHttpWorker | null = null;
   private inflightCount = 0;
+  // Init WASM instance retained for cron scheduler firing — schedule timers
+  // call into its exports after the worker pool is spun up.
+  private initState: WasmState | null = null;
 
   constructor(
     wasmPath: string,
@@ -139,6 +145,7 @@ export class CleanNodeServer {
     setRouteRegistry(this.routeRegistry);
 
     const initState = await this.createInitInstance();
+    this.initState = initState;
     const { exports } = initState;
 
     preGrowMemory(exports, this.config.preGrowMemoryBytes);
@@ -148,6 +155,12 @@ export class CleanNodeServer {
     } else if (typeof exports._start === 'function') {
       (exports._start as () => void)();
     }
+
+    // Cron schedules registered during start() are inert until the scheduler
+    // is wired to the WASM instance whose exports it should fire. The jobs
+    // worker reads the same init instance for handler dispatch.
+    startScheduler(initState);
+    startJobWorker(initState);
 
     if (this.config.verbose) {
       log.info({ routes: this.routeRegistry.getRoutes().length }, 'Routes registered');
@@ -463,6 +476,9 @@ export class CleanNodeServer {
   async gracefulShutdown(timeoutMs = 30000): Promise<void> {
     const log = getLogger();
     this.httpServer?.close();
+    stopScheduler();
+    stopJobWorker();
+    stopWebsocketServer();
     const deadline = Date.now() + timeoutMs;
     while (this.inflightCount > 0 && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
@@ -472,6 +488,7 @@ export class CleanNodeServer {
     }
     await this.requestPool?.close();
     this.httpWorker?.close();
+    this.initState = null;
   }
 
   private normalizeHeaders(headers: Request['headers']): Record<string, string> {
@@ -517,6 +534,10 @@ export class CleanNodeServer {
       this.httpServer.listen(listenPort, host, () => {
         const log = getLogger();
         log.info({ protocol, host, port: listenPort }, 'Clean Node Server listening');
+        if (this.initState && this.httpServer) {
+          attachWebsocketServer(this.httpServer as http.Server, this.initState)
+            .catch((err) => log.warn({ err }, 'WebSocket upgrade handler failed to attach'));
+        }
         resolve();
       });
       this.httpServer.on('error', reject);
