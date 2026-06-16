@@ -198,6 +198,102 @@ describe('_db_paginate', () => {
 
     expect(calls[0].params).toEqual([1000, 0]); // clamped from 999999 to 1000
   });
+
+  // Reserved-key protocol — see DB-BUILD-WHERE-IGNORES-DUNDER-WHERE.
+  // The framework's frame.data plugin emits `{"__where":"<sql_fragment>"}` for
+  // Model.paginate: / Model.cursor: where: blocks containing operators like
+  // `!= null` or `> x`. The bridge must append that fragment as raw SQL, not
+  // bind it as `WHERE __where = ?`. `__order` is the matching reserved key for
+  // ORDER BY.
+  it('honors __where as a raw SQL fragment in the where_json envelope', () => {
+    const { state, calls } = makeMockState({
+      results: [
+        { ok: true, data: { rows: [], count: 0 } },
+        { ok: true, data: { rows: [{ total: 0 }], count: 1 } },
+      ],
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'posts');
+    const where = writeRaw(memory, 1100, '{"__where":"published_at IS NOT NULL"}');
+
+    (bridge as any)._db_paginate(table.ptr, table.len, where.ptr, where.len, 1n, 10n);
+
+    expect(calls[0].sql).toBe('SELECT * FROM posts WHERE published_at IS NOT NULL LIMIT ? OFFSET ?');
+    expect(calls[0].params).toEqual([10, 0]);
+    expect(calls[1].sql).toBe('SELECT COUNT(*) AS total FROM posts WHERE published_at IS NOT NULL');
+    expect(calls[1].params).toEqual([]);
+  });
+
+  it('combines __where with regular column equality filters', () => {
+    const { state, calls } = makeMockState({
+      results: [
+        { ok: true, data: { rows: [], count: 0 } },
+        { ok: true, data: { rows: [{ total: 0 }], count: 1 } },
+      ],
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'posts');
+    const where = writeRaw(memory, 1100, '{"author_id":7,"__where":"published_at > NOW()"}');
+
+    (bridge as any)._db_paginate(table.ptr, table.len, where.ptr, where.len, 1n, 5n);
+
+    expect(calls[0].sql).toBe('SELECT * FROM posts WHERE author_id = ? AND published_at > NOW() LIMIT ? OFFSET ?');
+    expect(calls[0].params).toEqual([7, 5, 0]);
+  });
+
+  it('honors __order as a raw ORDER BY fragment', () => {
+    const { state, calls } = makeMockState({
+      results: [
+        { ok: true, data: { rows: [], count: 0 } },
+        { ok: true, data: { rows: [{ total: 0 }], count: 1 } },
+      ],
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'posts');
+    const where = writeRaw(memory, 1100, '{"__order":"created_at DESC"}');
+
+    (bridge as any)._db_paginate(table.ptr, table.len, where.ptr, where.len, 1n, 10n);
+
+    expect(calls[0].sql).toBe('SELECT * FROM posts  ORDER BY created_at DESC LIMIT ? OFFSET ?');
+    expect(calls[0].params).toEqual([10, 0]);
+    expect(calls[1].sql).toBe('SELECT COUNT(*) AS total FROM posts ');
+  });
+
+  it('honors __where and __order together', () => {
+    const { state, calls } = makeMockState({
+      results: [
+        { ok: true, data: { rows: [], count: 0 } },
+        { ok: true, data: { rows: [{ total: 0 }], count: 1 } },
+      ],
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'posts');
+    const where = writeRaw(memory, 1100, '{"__where":"published_at IS NOT NULL","__order":"id ASC"}');
+
+    (bridge as any)._db_paginate(table.ptr, table.len, where.ptr, where.len, 1n, 10n);
+
+    expect(calls[0].sql).toBe('SELECT * FROM posts WHERE published_at IS NOT NULL ORDER BY id ASC LIMIT ? OFFSET ?');
+  });
+
+  it('rejects __order containing SQL metacharacters', () => {
+    const { state, calls } = makeMockState({ results: [] });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'posts');
+    const where = writeRaw(memory, 1100, '{"__order":"id; DROP TABLE x; --"}');
+
+    (bridge as any)._db_paginate(table.ptr, table.len, where.ptr, where.len, 1n, 10n);
+    expect(calls).toHaveLength(0);
+  });
 });
 
 describe('_db_cursor_page', () => {
@@ -258,6 +354,29 @@ describe('_db_cursor_page', () => {
     );
 
     expect(calls[0].sql).toBe('SELECT * FROM items  ORDER BY id ASC LIMIT ?');
+    expect(calls[0].params).toEqual([11]);
+  });
+
+  it('honors __where reserved key in cursor where_json envelope', () => {
+    const { state, calls } = makeMockState({
+      results: [{ ok: true, data: { rows: [], count: 0 } }],
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const table = writeRaw(memory, 1000, 'items');
+    const where = writeRaw(memory, 1100, '{"__where":"price > 100"}');
+    const byField = writeRaw(memory, 1300, 'id');
+
+    (bridge as any)._db_cursor_page(
+      table.ptr, table.len,
+      where.ptr, where.len,
+      10n,
+      0, 0,
+      byField.ptr, byField.len,
+    );
+
+    expect(calls[0].sql).toBe('SELECT * FROM items WHERE price > 100 ORDER BY id ASC LIMIT ?');
     expect(calls[0].params).toEqual([11]);
   });
 

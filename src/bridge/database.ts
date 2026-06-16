@@ -288,7 +288,7 @@ export function createDatabaseBridge(getState: () => WasmState) {
         }));
       }
 
-      const { clause, params: whereParams, error: whereError } =
+      const { clause, params: whereParams, orderBy, error: whereError } =
         buildWhereClause(whereJson);
       if (whereError) {
         return writeString(state, JSON.stringify({
@@ -301,7 +301,8 @@ export function createDatabaseBridge(getState: () => WasmState) {
       const safePage = Math.max(1, Number(page));
       const offset = (safePage - 1) * safePerPage;
 
-      const itemsSql = `SELECT * FROM ${table} ${clause} LIMIT ? OFFSET ?`;
+      const orderSql = orderBy ? ` ORDER BY ${orderBy}` : '';
+      const itemsSql = `SELECT * FROM ${table} ${clause}${orderSql} LIMIT ? OFFSET ?`;
       const itemsResult = state.database.querySync(itemsSql, [
         ...whereParams,
         safePerPage,
@@ -440,6 +441,12 @@ export function createDatabaseBridge(getState: () => WasmState) {
 // ── helpers ──────────────────────────────────────────────────────────────
 
 const SAFE_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+// ORDER BY accepts `<col>[ ASC|DESC](, <col>[ ASC|DESC])*`. Restricting the
+// charset to word chars / spaces / commas blocks `;`, `--`, quotes, parens.
+const SAFE_ORDER_BY = /^[A-Za-z_][\w\s,]*$/;
+
+const RESERVED_WHERE_KEY = '__where';
+const RESERVED_ORDER_KEY = '__order';
 
 function isSafeIdentifier(s: string): boolean {
   return SAFE_IDENTIFIER.test(s);
@@ -448,9 +455,15 @@ function isSafeIdentifier(s: string): boolean {
 interface WhereResult {
   clause: string;
   params: unknown[];
+  orderBy?: string;
   error?: string;
 }
 
+// Reserved-key bridge protocol (DB-BUILD-WHERE-IGNORES-DUNDER-WHERE):
+// the framework's frame.data plugin emits `__where` and `__order` envelopes for
+// operators it cannot express as column = value (e.g. `IS NOT NULL`, `> NOW()`,
+// `created_at DESC`). Their values are raw SQL fragments produced by the
+// plugin's codegen and must pass through verbatim — not bind as parameters.
 function buildWhereClause(whereJson: string): WhereResult {
   let parsed: unknown;
   try {
@@ -461,18 +474,35 @@ function buildWhereClause(whereJson: string): WhereResult {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     return { clause: '', params: [] };
   }
-  const cols = Object.keys(parsed as Record<string, unknown>);
-  if (cols.length === 0) {
-    return { clause: '', params: [] };
-  }
-  for (const col of cols) {
-    if (!isSafeIdentifier(col)) {
-      return { clause: '', params: [], error: `Invalid column in WHERE: ${col}` };
+
+  const filters = parsed as Record<string, unknown>;
+  const clauses: string[] = [];
+  const params: unknown[] = [];
+  let orderBy: string | undefined;
+
+  for (const [key, val] of Object.entries(filters)) {
+    if (key === RESERVED_WHERE_KEY) {
+      if (typeof val !== 'string' || val.length === 0) continue;
+      clauses.push(val);
+      continue;
     }
+    if (key === RESERVED_ORDER_KEY) {
+      if (typeof val !== 'string' || val.length === 0) continue;
+      if (!SAFE_ORDER_BY.test(val)) {
+        return { clause: '', params: [], error: `Invalid ORDER BY: ${val}` };
+      }
+      orderBy = val;
+      continue;
+    }
+    if (!isSafeIdentifier(key)) {
+      return { clause: '', params: [], error: `Invalid column in WHERE: ${key}` };
+    }
+    clauses.push(`${key} = ?`);
+    params.push(val);
   }
-  const clause = 'WHERE ' + cols.map((c) => `${c} = ?`).join(' AND ');
-  const params = cols.map((c) => (parsed as Record<string, unknown>)[c]);
-  return { clause, params };
+
+  const clause = clauses.length > 0 ? 'WHERE ' + clauses.join(' AND ') : '';
+  return { clause, params, orderBy };
 }
 
 function extractCount(result: import('../types').DbResult): number {
