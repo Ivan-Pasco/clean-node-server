@@ -345,8 +345,13 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
         readString(state, fnNamePtr, fnNameLen);
         return writeString(state, '');
       },
-      _server_sleep(ms: number): void {
-        const end = Date.now() + ms;
+      // Registry: params=["integer"] -> WASM i64. JS receives a bigint;
+      // narrow to number for Date.now() arithmetic (millisecond ranges fit
+      // safely in a double for any practical sleep duration).
+      _server_sleep(ms: bigint): void {
+        const msNum = Number(ms);
+        if (!Number.isFinite(msNum) || msNum <= 0) return;
+        const end = Date.now() + msNum;
         while (Date.now() < end) { /* busy-wait */ }
       },
 
