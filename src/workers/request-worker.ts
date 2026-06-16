@@ -179,12 +179,22 @@ parentPort.on('message', (msg: WorkerInbound) => {
     } satisfies WorkerResponseMsg);
 
   } catch (err) {
+    // Errors must count toward rotation thresholds the same as successes.
+    // A WASM heap that was partially advanced before the throw stays advanced
+    // (WASM has no GC), so a high-error-rate endpoint that returns early via
+    // throw would otherwise grow the heap indefinitely without ever tripping
+    // MAX_REQUEST_COUNT or MAX_HEAP_GROWTH_BYTES — the root cause of
+    // NODESERVER_MEM_LEAK on workloads where errors are common.
+    requestCount++;
+    let heapGrown = 0;
+    try { heapGrown = readHeapPtr() - initialHeapPtr; } catch { /* heap unreadable post-trap */ }
+    const needsRestart = requestCount >= MAX_REQUEST_COUNT || heapGrown > MAX_HEAP_GROWTH_BYTES;
     parentPort!.postMessage({
       type: 'response',
       id,
       ok: false,
       error: err instanceof Error ? err.message : String(err),
-      needsRestart: false,
+      needsRestart,
     } satisfies WorkerErrorMsg);
   }
 });

@@ -143,13 +143,22 @@ export class RequestWorkerPool {
   }
 
   private restartSlot(slot: WorkerSlot): void {
-    void slot.worker.terminate().catch(() => undefined);
-    if (this.closed) return;
+    // Mark the slot empty up-front so dispatch() doesn't try to schedule onto a
+    // soon-to-die worker, then await termination before spawning the replacement.
+    // Overlapping the old + new worker briefly doubles the WASM linear memory
+    // reservation (each instance reserves up to a 4 GB guard region), so on a
+    // memory-constrained host the overlap window is what pushes RSS over the
+    // cgroup limit during rotation. Sequencing the terminate avoids the spike.
+    this.slots[slot.index] = null;
 
-    this.createSlot(slot.index)
-      .then((newSlot) => {
-        this.slots[slot.index] = newSlot;
-        this.drainQueue(newSlot);
+    slot.worker.terminate()
+      .catch(() => undefined)
+      .then(() => {
+        if (this.closed) return;
+        return this.createSlot(slot.index).then((newSlot) => {
+          this.slots[slot.index] = newSlot;
+          this.drainQueue(newSlot);
+        });
       })
       .catch((err) => {
         console.error(`[RequestWorkerPool] Failed to restart worker ${slot.index}:`, err);
