@@ -1,5 +1,5 @@
 import { WasmState } from '../types';
-import { readPrefixedString, writeString } from './helpers';
+import { readString, writeString } from './helpers';
 import { getRouteRegistry } from './http-server';
 import { setRequestContext, getResponse } from '../wasm/state';
 import { readLengthPrefixedString } from '../wasm/memory';
@@ -20,20 +20,23 @@ export function resetTestBridge(): void {
 
 export function createTestBridge(getState: () => WasmState) {
   return {
-    // Params: (method LP-ptr, path LP-ptr, body LP-ptr, headerKey LP-ptr, headerValue LP-ptr) -> handle i32
+    // Params: 5 raw (ptr, len) pairs matching the compiler's WASM emission and
+    // clean-server/src/bridge.rs. NOT length-prefixed pointers.
+    // Signature: (method_ptr, method_len, path_ptr, path_len, body_ptr, body_len,
+    //             hkey_ptr, hkey_len, hval_ptr, hval_len) -> handle i32
     _test_http_request(
-      methodPtr: number,
-      pathPtr: number,
-      bodyPtr: number,
-      headerKeyPtr: number,
-      headerValuePtr: number
+      methodPtr: number, methodLen: number,
+      pathPtr: number, pathLen: number,
+      bodyPtr: number, bodyLen: number,
+      headerKeyPtr: number, headerKeyLen: number,
+      headerValuePtr: number, headerValueLen: number
     ): number {
       const state = getState();
-      const method = readPrefixedString(state, methodPtr);
-      const rawPath = readPrefixedString(state, pathPtr);
-      const body = readPrefixedString(state, bodyPtr);
-      const headerKey = readPrefixedString(state, headerKeyPtr);
-      const headerValue = readPrefixedString(state, headerValuePtr);
+      const method = readString(state, methodPtr, methodLen);
+      const rawPath = readString(state, pathPtr, pathLen);
+      const body = readString(state, bodyPtr, bodyLen);
+      const headerKey = readString(state, headerKeyPtr, headerKeyLen);
+      const headerValue = readString(state, headerValuePtr, headerValueLen);
 
       const { path, query } = parseUrl(rawPath);
       const registry = getRouteRegistry();
