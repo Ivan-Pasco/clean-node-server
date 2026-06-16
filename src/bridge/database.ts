@@ -256,35 +256,231 @@ export function createDatabaseBridge(getState: () => WasmState) {
     },
 
     // ── Pagination & field validation ──────────────────────────────────
-    // Throw-error stubs. Real impls in clean-server delegate to an
-    // internal db_bridge.call("paginate" | "cursor_page" | "valid_field")
-    // abstraction that doesn't exist in node-server yet. Tracked in
-    // foundation/management/cross-component-prompts/
-    //   all-host-bridge-parity-enforcement.md (Step 4).
+    // clean-server delegates these to a `db_bridge.call("paginate" | ...)`
+    // abstraction that doesn't exist in node-server. We do the SQL building
+    // here directly, using the same per-driver querySync path as _db_query.
+    //
+    // WHERE format: a flat JSON object {col: value, ...} produces
+    //   `WHERE col1 = ? AND col2 = ?` with bound params, applied for both
+    //   items and count queries. Each column name is validated against a
+    //   strict identifier regex to prevent SQL injection — the value side
+    //   is always parameterized so it doesn't need that check.
+
     _db_paginate(
-      _tablePtr: number, _wherePtr: number, _page: bigint, _perPage: bigint,
+      tablePtr: number, tableLen: number,
+      wherePtr: number, whereLen: number,
+      page: bigint, perPage: bigint,
     ): number {
-      throw new Error(
-        '_db_paginate is not yet implemented on clean-node-server. ' +
-        'Use _db_query with LIMIT/OFFSET until the paginate abstraction lands.'
-      );
+      const state = getState();
+      if (!state.database?.querySync) {
+        return writeString(state, NO_DB_RESULT);
+      }
+
+      const table = readString(state, tablePtr, tableLen);
+      const whereJson = whereLen > 0
+        ? readString(state, wherePtr, whereLen)
+        : '{}';
+
+      if (!isSafeIdentifier(table)) {
+        return writeString(state, JSON.stringify({
+          ok: false,
+          err: { code: 'BAD_TABLE', message: `Invalid table name: ${table}` },
+        }));
+      }
+
+      const { clause, params: whereParams, error: whereError } =
+        buildWhereClause(whereJson);
+      if (whereError) {
+        return writeString(state, JSON.stringify({
+          ok: false,
+          err: { code: 'BAD_WHERE', message: whereError },
+        }));
+      }
+
+      const safePerPage = Math.max(1, Math.min(Number(perPage), 1000));
+      const safePage = Math.max(1, Number(page));
+      const offset = (safePage - 1) * safePerPage;
+
+      const itemsSql = `SELECT * FROM ${table} ${clause} LIMIT ? OFFSET ?`;
+      const itemsResult = state.database.querySync(itemsSql, [
+        ...whereParams,
+        safePerPage,
+        offset,
+      ]);
+      if (!itemsResult.ok) {
+        return writeString(state, JSON.stringify(itemsResult));
+      }
+
+      const countSql = `SELECT COUNT(*) AS total FROM ${table} ${clause}`;
+      const countResult = state.database.querySync(countSql, whereParams);
+      const total = extractCount(countResult);
+      const totalPages = total === 0 ? 0 : Math.ceil(total / safePerPage);
+
+      return writeString(state, JSON.stringify({
+        ok: true,
+        data: {
+          items: itemsResult.data?.rows ?? [],
+          page: safePage,
+          per_page: safePerPage,
+          total,
+          total_pages: totalPages,
+        },
+      }));
     },
 
     _db_cursor_page(
-      _tablePtr: number, _wherePtr: number, _perPage: bigint,
-      _afterPtr: number, _byFieldPtr: number,
+      tablePtr: number, tableLen: number,
+      wherePtr: number, whereLen: number,
+      perPage: bigint,
+      afterPtr: number, afterLen: number,
+      byFieldPtr: number, byFieldLen: number,
     ): number {
-      throw new Error(
-        '_db_cursor_page is not yet implemented on clean-node-server. ' +
-        'Use _db_query with explicit cursor predicate until the cursor_page abstraction lands.'
-      );
+      const state = getState();
+      if (!state.database?.querySync) {
+        return writeString(state, NO_DB_RESULT);
+      }
+
+      const table = readString(state, tablePtr, tableLen);
+      const whereJson = whereLen > 0
+        ? readString(state, wherePtr, whereLen)
+        : '{}';
+      const after = afterLen > 0 ? readString(state, afterPtr, afterLen) : '';
+      const byField = readString(state, byFieldPtr, byFieldLen);
+
+      if (!isSafeIdentifier(table)) {
+        return writeString(state, JSON.stringify({
+          ok: false,
+          err: { code: 'BAD_TABLE', message: `Invalid table name: ${table}` },
+        }));
+      }
+      if (!isSafeIdentifier(byField)) {
+        return writeString(state, JSON.stringify({
+          ok: false,
+          err: { code: 'BAD_CURSOR_FIELD', message: `Invalid cursor field: ${byField}` },
+        }));
+      }
+
+      const { clause, params: whereParams, error: whereError } =
+        buildWhereClause(whereJson);
+      if (whereError) {
+        return writeString(state, JSON.stringify({
+          ok: false,
+          err: { code: 'BAD_WHERE', message: whereError },
+        }));
+      }
+
+      // Cursor predicate: `byField > after` if cursor is non-empty.
+      // Fetch one extra row to detect "has more".
+      const safePerPage = Math.max(1, Math.min(Number(perPage), 1000));
+      const cursorClause = after !== ''
+        ? (clause === '' ? `WHERE ${byField} > ?` : `${clause} AND ${byField} > ?`)
+        : clause;
+      const queryParams = after !== ''
+        ? [...whereParams, after]
+        : whereParams;
+
+      const sql = `SELECT * FROM ${table} ${cursorClause} ORDER BY ${byField} ASC LIMIT ?`;
+      const result = state.database.querySync(sql, [...queryParams, safePerPage + 1]);
+      if (!result.ok) {
+        return writeString(state, JSON.stringify(result));
+      }
+
+      const rows = (result.data?.rows ?? []) as Record<string, unknown>[];
+      const hasMore = rows.length > safePerPage;
+      const items = hasMore ? rows.slice(0, safePerPage) : rows;
+      const nextCursor = hasMore && items.length > 0
+        ? String(items[items.length - 1]![byField] ?? '')
+        : '';
+
+      return writeString(state, JSON.stringify({
+        ok: true,
+        data: {
+          items,
+          per_page: safePerPage,
+          next_cursor: nextCursor,
+          has_more: hasMore,
+        },
+      }));
     },
 
-    _db_valid_field(_tablePtr: number, _fieldPtr: number): number {
-      throw new Error(
-        '_db_valid_field is not yet implemented on clean-node-server. ' +
-        'Caller should validate ORDER BY field names at the application layer for now.'
-      );
+    _db_valid_field(
+      tablePtr: number, tableLen: number,
+      fieldPtr: number, fieldLen: number,
+    ): number {
+      const state = getState();
+      const table = readString(state, tablePtr, tableLen);
+      const field = readString(state, fieldPtr, fieldLen);
+
+      // Identifier safety must hold even without a database — this is the
+      // anti-injection guarantee callers depend on for ORDER BY.
+      if (!isSafeIdentifier(table) || !isSafeIdentifier(field)) {
+        return 0;
+      }
+
+      // No database → identifier check alone is what we can offer.
+      if (!state.database?.querySync) {
+        return 1;
+      }
+
+      // Confirm the field actually exists on the table by selecting it with
+      // a 0-row limit. Portable across SQLite / MySQL / PostgreSQL.
+      try {
+        const result = state.database.querySync(
+          `SELECT ${field} FROM ${table} LIMIT 0`,
+          [],
+        );
+        return result.ok ? 1 : 0;
+      } catch {
+        return 0;
+      }
     },
   };
+}
+
+// ── helpers ──────────────────────────────────────────────────────────────
+
+const SAFE_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+function isSafeIdentifier(s: string): boolean {
+  return SAFE_IDENTIFIER.test(s);
+}
+
+interface WhereResult {
+  clause: string;
+  params: unknown[];
+  error?: string;
+}
+
+function buildWhereClause(whereJson: string): WhereResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(whereJson);
+  } catch {
+    return { clause: '', params: [], error: 'WHERE clause is not valid JSON' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { clause: '', params: [] };
+  }
+  const cols = Object.keys(parsed as Record<string, unknown>);
+  if (cols.length === 0) {
+    return { clause: '', params: [] };
+  }
+  for (const col of cols) {
+    if (!isSafeIdentifier(col)) {
+      return { clause: '', params: [], error: `Invalid column in WHERE: ${col}` };
+    }
+  }
+  const clause = 'WHERE ' + cols.map((c) => `${c} = ?`).join(' AND ');
+  const params = cols.map((c) => (parsed as Record<string, unknown>)[c]);
+  return { clause, params };
+}
+
+function extractCount(result: import('../types').DbResult): number {
+  if (!result.ok) return 0;
+  const rows = result.data?.rows;
+  if (!Array.isArray(rows) || rows.length === 0) return 0;
+  const first = rows[0] as Record<string, unknown>;
+  // Drivers vary in alias casing; check both.
+  const v = first.total ?? first.TOTAL ?? Object.values(first)[0];
+  return typeof v === 'number' ? v : typeof v === 'string' ? Number(v) : Number(v ?? 0);
 }
