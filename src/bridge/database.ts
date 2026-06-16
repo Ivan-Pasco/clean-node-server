@@ -254,5 +254,37 @@ export function createDatabaseBridge(getState: () => WasmState) {
       const state = getState();
       return state.database ? 1 : 0;
     },
+
+    // ── Pagination & field validation ──────────────────────────────────
+    // Throw-error stubs. Real impls in clean-server delegate to an
+    // internal db_bridge.call("paginate" | "cursor_page" | "valid_field")
+    // abstraction that doesn't exist in node-server yet. Tracked in
+    // foundation/management/cross-component-prompts/
+    //   all-host-bridge-parity-enforcement.md (Step 4).
+    _db_paginate(
+      _tablePtr: number, _wherePtr: number, _page: bigint, _perPage: bigint,
+    ): number {
+      throw new Error(
+        '_db_paginate is not yet implemented on clean-node-server. ' +
+        'Use _db_query with LIMIT/OFFSET until the paginate abstraction lands.'
+      );
+    },
+
+    _db_cursor_page(
+      _tablePtr: number, _wherePtr: number, _perPage: bigint,
+      _afterPtr: number, _byFieldPtr: number,
+    ): number {
+      throw new Error(
+        '_db_cursor_page is not yet implemented on clean-node-server. ' +
+        'Use _db_query with explicit cursor predicate until the cursor_page abstraction lands.'
+      );
+    },
+
+    _db_valid_field(_tablePtr: number, _fieldPtr: number): number {
+      throw new Error(
+        '_db_valid_field is not yet implemented on clean-node-server. ' +
+        'Caller should validate ORDER BY field names at the application layer for now.'
+      );
+    },
   };
 }
