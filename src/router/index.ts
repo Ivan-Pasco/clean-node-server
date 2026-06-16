@@ -8,27 +8,25 @@ export class RouteRegistry {
   private registrationCounter = 0;
 
   /**
-   * Register a new route
+   * Register a new route. `handlerName` is the WASM export to invoke at
+   * dispatch time (e.g. `__route_handler_get__ping`). The framework picks the
+   * naming convention; node-server only stores and dispatches by that name.
    */
   register(
     method: string,
     pattern: string,
-    _wasmTableIndex: number,
+    handlerName: string,
     isProtected: boolean = false,
     requiredRole?: string
   ): void {
     const { regex, paramNames } = this.compilePattern(pattern);
-    // The compiler exports handlers as __route_handler_0, __route_handler_1, ...
-    // in registration order. Use the sequential counter as the dispatch index,
-    // not the raw WASM function-table offset.
-    const handlerIndex = this.registrationCounter++;
 
     this.routes.push({
       method: method.toUpperCase(),
       pattern,
       regex,
       paramNames,
-      handlerIndex,
+      handlerName,
       isProtected,
       requiredRole,
     });
@@ -65,13 +63,15 @@ export class RouteRegistry {
    */
   registerRedirect(method: string, pattern: string, to: string, status: number): void {
     const { regex, paramNames } = this.compilePattern(pattern);
-    const handlerIndex = this.registrationCounter++;
+    // Synthetic name — never dispatched (the redirectTo branch short-circuits
+    // before any WASM call). Kept for type uniformity.
+    const handlerName = `__redirect_${this.registrationCounter++}`;
     this.routes.push({
       method: method.toUpperCase(),
       pattern,
       regex,
       paramNames,
-      handlerIndex,
+      handlerName,
       isProtected: false,
       redirectTo: to,
       redirectStatus: status,
@@ -85,13 +85,13 @@ export class RouteRegistry {
    */
   registerSse(method: string, pattern: string, handlerName: string): void {
     const { regex, paramNames } = this.compilePattern(pattern);
-    const handlerIndex = this.registrationCounter++;
+    this.registrationCounter++;
     this.routes.push({
       method: method.toUpperCase(),
       pattern,
       regex,
       paramNames,
-      handlerIndex,
+      handlerName,
       isProtected: false,
       isSse: true,
       sseHandlerName: handlerName,

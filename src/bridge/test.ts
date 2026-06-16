@@ -68,7 +68,7 @@ export function createTestBridge(getState: () => WasmState) {
       };
       state.injectedCss = undefined;
 
-      const handlerName = `__route_handler_${match.route.handlerIndex}`;
+      const handlerName = match.route.handlerName;
       const handler = state.exports[handlerName];
       if (typeof handler !== 'function') return -1;
 

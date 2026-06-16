@@ -1,6 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { RouteRegistry, parseQueryString, parseUrl } from '../src/router';
 
+// Test helper — the framework passes string handler-export names. Tests use
+// synthetic names so failures show what was registered vs dispatched.
+const handler = (n: number) => `__route_handler_${n}`;
+
 describe('RouteRegistry', () => {
   let registry: RouteRegistry;
 
@@ -10,23 +14,23 @@ describe('RouteRegistry', () => {
 
   describe('register and match', () => {
     it('should match a simple static route', () => {
-      registry.register('GET', '/users', 0);
+      registry.register('GET', '/users', handler(0));
 
       const match = registry.match('GET', '/users');
       expect(match).not.toBeNull();
-      expect(match?.route.handlerIndex).toBe(0);
+      expect(match?.route.handlerName).toBe(handler(0));
       expect(match?.params).toEqual({});
     });
 
     it('should not match different methods', () => {
-      registry.register('GET', '/users', 0);
+      registry.register('GET', '/users', handler(0));
 
       const match = registry.match('POST', '/users');
       expect(match).toBeNull();
     });
 
     it('should match routes with parameters', () => {
-      registry.register('GET', '/users/:id', 0);
+      registry.register('GET', '/users/:id', handler(0));
 
       const match = registry.match('GET', '/users/123');
       expect(match).not.toBeNull();
@@ -34,7 +38,7 @@ describe('RouteRegistry', () => {
     });
 
     it('should match routes with multiple parameters', () => {
-      registry.register('GET', '/users/:userId/posts/:postId', 0);
+      registry.register('GET', '/users/:userId/posts/:postId', handler(0));
 
       const match = registry.match('GET', '/users/42/posts/100');
       expect(match).not.toBeNull();
@@ -42,7 +46,7 @@ describe('RouteRegistry', () => {
     });
 
     it('should handle URL-encoded parameters', () => {
-      registry.register('GET', '/search/:query', 0);
+      registry.register('GET', '/search/:query', handler(0));
 
       const match = registry.match('GET', '/search/hello%20world');
       expect(match).not.toBeNull();
@@ -50,39 +54,50 @@ describe('RouteRegistry', () => {
     });
 
     it('should match wildcard routes', () => {
-      registry.register('GET', '/files/*', 0);
+      registry.register('GET', '/files/*', handler(0));
 
       const match = registry.match('GET', '/files/path/to/file.txt');
       expect(match).not.toBeNull();
     });
 
     it('should not match when path has extra segments', () => {
-      registry.register('GET', '/users', 0);
+      registry.register('GET', '/users', handler(0));
 
       const match = registry.match('GET', '/users/extra');
       expect(match).toBeNull();
     });
 
     it('should prefer exact matches over parameter matches', () => {
-      registry.register('GET', '/users/me', 0);
-      registry.register('GET', '/users/:id', 1);
+      registry.register('GET', '/users/me', handler(0));
+      registry.register('GET', '/users/:id', handler(1));
 
       const match = registry.match('GET', '/users/me');
       expect(match).not.toBeNull();
-      expect(match?.route.handlerIndex).toBe(0);
+      expect(match?.route.handlerName).toBe(handler(0));
+    });
+
+    it('should preserve a non-sequential framework-chosen handler name (RTE002 guard)', () => {
+      // The framework picks names like __route_handler_get__ping rather than
+      // sequential indexes. node-server must store the name verbatim and
+      // dispatch by it; reconstructing __route_handler_${i} was the RTE002
+      // regression.
+      registry.register('GET', '/ping', '__route_handler_get__ping');
+
+      const match = registry.match('GET', '/ping');
+      expect(match?.route.handlerName).toBe('__route_handler_get__ping');
     });
   });
 
   describe('protected routes', () => {
     it('should mark routes as protected', () => {
-      registry.register('GET', '/admin', 0, true);
+      registry.register('GET', '/admin', handler(0), true);
 
       const match = registry.match('GET', '/admin');
       expect(match?.route.isProtected).toBe(true);
     });
 
     it('should store required role', () => {
-      registry.register('GET', '/admin', 0, true, 'admin');
+      registry.register('GET', '/admin', handler(0), true, 'admin');
 
       const match = registry.match('GET', '/admin');
       expect(match?.route.requiredRole).toBe('admin');
@@ -91,16 +106,16 @@ describe('RouteRegistry', () => {
 
   describe('getRoutes', () => {
     it('should return all registered routes', () => {
-      registry.register('GET', '/users', 0);
-      registry.register('POST', '/users', 1);
-      registry.register('GET', '/posts', 2);
+      registry.register('GET', '/users', handler(0));
+      registry.register('POST', '/users', handler(1));
+      registry.register('GET', '/posts', handler(2));
 
       const routes = registry.getRoutes();
       expect(routes).toHaveLength(3);
     });
 
     it('should return a copy of routes', () => {
-      registry.register('GET', '/users', 0);
+      registry.register('GET', '/users', handler(0));
 
       const routes1 = registry.getRoutes();
       const routes2 = registry.getRoutes();
@@ -111,8 +126,8 @@ describe('RouteRegistry', () => {
 
   describe('clear', () => {
     it('should remove all routes', () => {
-      registry.register('GET', '/users', 0);
-      registry.register('POST', '/users', 1);
+      registry.register('GET', '/users', handler(0));
+      registry.register('POST', '/users', handler(1));
 
       registry.clear();
 

@@ -52,7 +52,7 @@ export interface WorkerRequestMsg {
   type: 'request';
   id: number;
   context: RequestContext;
-  handlerIndex: number;
+  handlerName: string;
 }
 
 export interface WorkerResponseMsg {

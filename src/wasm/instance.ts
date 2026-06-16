@@ -79,10 +79,11 @@ export function callStart(state: WasmState): void {
 }
 
 /**
- * Call a handler function by index
+ * Call a handler function by its exported WASM name.
+ * The framework chooses the naming convention; node-server stores the name
+ * verbatim from `_http_route` and looks it up here at dispatch time.
  */
-export function callHandler(state: WasmState, handlerIndex: number): number {
-  const handlerName = `__route_handler_${handlerIndex}`;
+export function callHandler(state: WasmState, handlerName: string): number {
   const handler = state.exports[handlerName];
   if (typeof handler !== 'function') {
     throw new Error(`Handler function not found: ${handlerName}`);

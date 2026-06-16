@@ -38,14 +38,24 @@ export interface SessionData {
 }
 
 /**
- * Route handler registration
+ * Route handler registration.
+ *
+ * `handlerName` is the WASM export the framework asked node-server to dispatch
+ * to (e.g. `__route_handler_get__ping`). The framework's _http_route call passes
+ * the export name as a string — node-server stores it verbatim and looks it up
+ * on the WASM instance at dispatch time. Historically this was a numeric index
+ * and node-server reconstructed `__route_handler_${index}`; that broke routes
+ * whenever the framework picked a non-sequential name (RTE002 family).
+ *
+ * For redirect/SSE routes that don't invoke a regular WASM handler, this field
+ * still holds a synthetic placeholder for type uniformity.
  */
 export interface RouteHandler {
   method: string;
   pattern: string;
   regex: RegExp;
   paramNames: string[];
-  handlerIndex: number;
+  handlerName: string;
   isProtected: boolean;
   requiredRole?: string;
   isSse?: boolean;

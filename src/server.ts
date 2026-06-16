@@ -152,7 +152,7 @@ export class CleanNodeServer {
     if (this.config.verbose) {
       log.info({ routes: this.routeRegistry.getRoutes().length }, 'Routes registered');
       for (const route of this.routeRegistry.getRoutes()) {
-        log.debug({ method: route.method, pattern: route.pattern, handler: route.handlerIndex, protected: route.isProtected }, 'route');
+        log.debug({ method: route.method, pattern: route.pattern, handler: route.handlerName, protected: route.isProtected }, 'route');
       }
     }
 
@@ -328,7 +328,7 @@ export class CleanNodeServer {
 
     this.inflightCount++;
     try {
-      const result = await this.requestPool.dispatch(context, route.handlerIndex);
+      const result = await this.requestPool.dispatch(context, route.handlerName);
 
       for (const cookie of result.cookies) {
         res.cookie(cookie.name, cookie.value, (cookie.options ?? {}) as Record<string, unknown>);

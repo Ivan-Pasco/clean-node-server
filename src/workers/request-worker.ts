@@ -115,7 +115,7 @@ async function initialize(): Promise<void> {
 parentPort.on('message', (msg: WorkerInbound) => {
   if (msg.type !== 'request') return;
 
-  const { id, context, handlerIndex } = msg as WorkerRequestMsg;
+  const { id, context, handlerName } = msg as WorkerRequestMsg;
 
   if (!wasmState) {
     parentPort!.postMessage({
@@ -129,7 +129,6 @@ parentPort.on('message', (msg: WorkerInbound) => {
     setRequestContext(wasmState, context);
     resetRequestState();
 
-    const handlerName = `__route_handler_${handlerIndex}`;
     const handler = wasmState.exports[handlerName];
     if (typeof handler !== 'function') {
       throw new Error(`Handler function not found: ${handlerName}`);

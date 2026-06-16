@@ -177,11 +177,11 @@ export class RequestWorkerPool {
     slot.worker.postMessage(dispatch.msg);
   }
 
-  dispatch(context: RequestContext, handlerIndex: number): Promise<DispatchResult> {
+  dispatch(context: RequestContext, handlerName: string): Promise<DispatchResult> {
     if (this.closed) return Promise.reject(new Error('RequestWorkerPool is closed'));
 
     const id = this.nextId++;
-    const msg: WorkerRequestMsg = { type: 'request', id, context, handlerIndex };
+    const msg: WorkerRequestMsg = { type: 'request', id, context, handlerName };
 
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {

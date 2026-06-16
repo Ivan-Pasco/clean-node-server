@@ -62,21 +62,32 @@ export function createHttpServerBridge(getState: () => WasmState) {
     /**
      * Register a route handler
      */
+    // Signature matches function-registry.toml _http_route entry:
+    //   params = ["string", "string", "string"]  -> 6 raw i32 (3 ptr+len pairs)
+    //   returns = i32
+    // The 3rd string is the WASM export name to dispatch (e.g.
+    // "__route_handler_get__ping") — node-server stores it verbatim and looks
+    // it up at request time. This used to take a numeric handler index, which
+    // broke routes whenever the framework picked a non-sequential name (the
+    // RTE002 family of bugs).
     _http_route(
       methodPtr: number,
       methodLen: number,
       pathPtr: number,
       pathLen: number,
-      handlerIndex: number
-    ): void {
+      handlerPtr: number,
+      handlerLen: number
+    ): number {
       const state = getState();
       const method = readString(state, methodPtr, methodLen);
       const path = readString(state, pathPtr, pathLen);
+      const handlerName = readString(state, handlerPtr, handlerLen);
 
       const registry = getRouteRegistry();
-      registry.register(method, path, handlerIndex, false);
+      registry.register(method, path, handlerName, false);
 
-      log(state, 'HTTP', `Route registered: ${method} ${path} -> handler_${handlerIndex}`);
+      log(state, 'HTTP', `Route registered: ${method} ${path} -> ${handlerName}`);
+      return 0;
     },
 
     /**
@@ -131,30 +142,38 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
-     * Register a protected route handler (requires authentication)
+     * Register a protected route handler (requires authentication).
+     *
+     * Signature matches function-registry.toml _http_route_protected:
+     *   params = ["string", "string", "string", "string"]  -> 8 raw i32
+     *   returns = i32
+     * Strings are (method, path, handler-export-name, required-role).
      */
     _http_route_protected(
       methodPtr: number,
       methodLen: number,
       pathPtr: number,
       pathLen: number,
-      handlerIndex: number,
+      handlerPtr: number,
+      handlerLen: number,
       rolePtr: number,
       roleLen: number
-    ): void {
+    ): number {
       const state = getState();
       const method = readString(state, methodPtr, methodLen);
       const path = readString(state, pathPtr, pathLen);
+      const handlerName = readString(state, handlerPtr, handlerLen);
       const requiredRole = roleLen > 0 ? readString(state, rolePtr, roleLen) : undefined;
 
       const registry = getRouteRegistry();
-      registry.register(method, path, handlerIndex, true, requiredRole);
+      registry.register(method, path, handlerName, true, requiredRole);
 
       log(
         state,
         'HTTP',
-        `Protected route registered: ${method} ${path} -> handler_${handlerIndex} (role: ${requiredRole || 'any'})`
+        `Protected route registered: ${method} ${path} -> ${handlerName} (role: ${requiredRole || 'any'})`
       );
+      return 0;
     },
 
     /**
