@@ -353,8 +353,7 @@ export function createHttpServerBridge(getState: () => WasmState) {
       state.response.headers['Content-Type'] = contentType;
       state.response.body = body;
 
-      // Return a pointer to indicate success (0 for success)
-      return 0;
+      return writeString(state, body);
     },
 
     /**
