@@ -720,11 +720,11 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
-     * Render an HTML template with {{ key }} substitution. Caller provides the
+     * Render an HTML template with {key} substitution. Caller provides the
      * full relative path from project root (e.g. "app/ui/pages/index.html").
      * Path construction is the caller's responsibility.
      *
-     * Substitutes all {{ key }} occurrences with the corresponding value from
+     * Substitutes all {key} occurrences with the corresponding value from
      * the JSON data string. Missing keys produce an empty string. Returns the
      * rendered HTML as a length-prefixed string pointer, or an empty string on error.
      */
@@ -770,7 +770,7 @@ export function createUiBridge(getState: () => WasmState) {
         }
       }
 
-      const substituted = template.replace(/{{\s*([\w.]+)\s*}}/g, (_match, key) => {
+      const substituted = template.replace(/\{([\w.]+)\}/g, (_match, key) => {
         const value = getNestedValue(data, key);
         return value !== undefined && value !== null ? String(value) : '';
       });
