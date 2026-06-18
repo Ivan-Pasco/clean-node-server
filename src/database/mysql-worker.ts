@@ -78,8 +78,16 @@ parentPort.on('message', async () => {
         const [result] = conn
           ? await conn.execute(req.sql!, params)
           : await pool.execute(req.sql!, params);
-        const affectedRows = (result as mysql.ResultSetHeader).affectedRows ?? 0;
-        writeResponse({ ok: true, count: affectedRows });
+        const header = result as mysql.ResultSetHeader;
+        const affectedRows = header.affectedRows ?? 0;
+        // header.insertId is 0 for non-insert statements (UPDATE/DELETE) and
+        // the auto-increment value (or first row's id for multi-row inserts)
+        // for INSERT/REPLACE. Surface 0 as null so the bridge can distinguish
+        // "no insert id available" from a real id of 0.
+        const rawInsertId = header.insertId;
+        const insertId =
+          typeof rawInsertId === 'number' && rawInsertId > 0 ? rawInsertId : null;
+        writeResponse({ ok: true, count: affectedRows, insertId });
         break;
       }
 

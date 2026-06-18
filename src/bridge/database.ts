@@ -47,6 +47,15 @@ export function createDatabaseBridge(getState: () => WasmState) {
 
       log(state, 'DB', `Query: ${sql}`, { params });
 
+      // FRAME-DATA-LAST-INSERT-ID-ZERO: MySQL LAST_INSERT_ID() and SQLite
+      // LAST_INSERT_ROWID() are session-local and would dispatch against a
+      // fresh pooled connection — losing the id from the prior INSERT. Serve
+      // a synthetic row from the per-request cache instead.
+      const lastInsertAlias = lastInsertIdAlias(sql);
+      if (lastInsertAlias !== null) {
+        return writeString(state, lastInsertIdResponse(lastInsertAlias, state.lastInsertId));
+      }
+
       if (state.database.querySync) {
         const result = state.database.querySync(sql, params);
         return writeString(state, JSON.stringify(result));
@@ -118,13 +127,20 @@ export function createDatabaseBridge(getState: () => WasmState) {
       log(state, 'DB', `Execute: ${sql}`, { params });
 
       if (state.database.executeSync) {
-        return state.database.executeSync(sql, params);
+        const { count, lastInsertId } = state.database.executeSync(sql, params);
+        if (count >= 0 && lastInsertId !== null && isInsert(sql)) {
+          state.lastInsertId = lastInsertId;
+        }
+        return count;
       }
 
       // PostgreSQL fallback
       const cache = getAsyncCache(state);
-      state.database.execute(sql, params).then((count) => {
+      state.database.execute(sql, params).then(({ count, lastInsertId }) => {
         cache.lastExecuteResult = count;
+        if (count >= 0 && lastInsertId !== null && isInsert(sql)) {
+          state.lastInsertId = lastInsertId;
+        }
       }).catch((err) => {
         console.error('DB execute error:', err);
         cache.lastExecuteResult = -1;
@@ -151,8 +167,11 @@ export function createDatabaseBridge(getState: () => WasmState) {
       const params = parseDbParams(paramsJson);
       const cache = getAsyncCache(state);
 
-      state.database.execute(sql, params).then((count) => {
+      state.database.execute(sql, params).then(({ count, lastInsertId }) => {
         cache.lastExecuteResult = count;
+        if (count >= 0 && lastInsertId !== null && isInsert(sql)) {
+          state.lastInsertId = lastInsertId;
+        }
       }).catch(() => {
         cache.lastExecuteResult = -1;
       });
@@ -503,6 +522,55 @@ function buildWhereClause(whereJson: string): WhereResult {
 
   const clause = clauses.length > 0 ? 'WHERE ' + clauses.join(' AND ') : '';
   return { clause, params, orderBy };
+}
+
+// ── LAST_INSERT_ID interception (FRAME-DATA-LAST-INSERT-ID-ZERO) ─────────
+//
+// Parse `SELECT [LAST_INSERT_ID() | LAST_INSERT_ROWID()] [AS <alias>]` and
+// return the alias to use in the synthetic single-row response, or null when
+// the SQL is something else. Tolerates extra whitespace, lower/upper case,
+// trailing semicolon, and the rare `LAST_INSERT_ID ( )` form. Rejects shapes
+// with extra columns, WHERE / FROM clauses, or function args.
+export function lastInsertIdAlias(sql: string): string | null {
+  const normalized = sql.replace(/\s+/g, ' ').replace(/;$/, '').trim().toUpperCase();
+  const body = normalized.startsWith('SELECT ') ? normalized.slice('SELECT '.length).trim() : null;
+  if (body === null) return null;
+
+  const fnCandidates = ['LAST_INSERT_ID()', 'LAST_INSERT_ID ( )', 'LAST_INSERT_ROWID()', 'LAST_INSERT_ROWID ( )'];
+  let rest: string | null = null;
+  for (const fn of fnCandidates) {
+    if (body.startsWith(fn)) {
+      rest = body.slice(fn.length).trim();
+      break;
+    }
+  }
+  if (rest === null) return null;
+
+  if (rest === '') return 'id';
+
+  const aliasBody = rest.startsWith('AS ') ? rest.slice(3).trim() : rest;
+  // Anything but a single identifier means a multi-column SELECT or extra
+  // clauses (FROM / WHERE / commas) — refuse to intercept.
+  if (!/^[A-Z_][A-Z0-9_]*$/.test(aliasBody)) return null;
+
+  // Preserve original case: find the same identifier in the source SQL.
+  const original = sql.match(new RegExp(`\\b${aliasBody}\\b`, 'i'));
+  return original ? original[0] : aliasBody.toLowerCase();
+}
+
+export function lastInsertIdResponse(alias: string, id: number | null): string {
+  return JSON.stringify({
+    ok: true,
+    data: {
+      rows: [{ [alias]: id ?? 0 }],
+      count: 1,
+    },
+  });
+}
+
+export function isInsert(sql: string): boolean {
+  const head = sql.trimStart().slice(0, 8).toUpperCase();
+  return head.startsWith('INSERT') || head.startsWith('REPLACE');
 }
 
 function extractCount(result: import('../types').DbResult): number {

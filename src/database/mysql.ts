@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { Worker } from 'worker_threads';
-import { DatabaseDriver, DbResult } from '../types';
+import { DatabaseDriver, DbExecuteResult, DbResult } from '../types';
 
 const IDLE = 0;
 const PENDING = 1;
@@ -78,12 +78,22 @@ export class SyncMysqlDriver implements DatabaseDriver {
     }
   }
 
-  executeSync(sql: string, params: unknown[]): number {
+  executeSync(sql: string, params: unknown[]): DbExecuteResult {
     try {
-      const res = JSON.parse(this.sendAndWait({ op: 'execute', sql, params })) as { ok: boolean; count?: number };
-      return res.ok ? (res.count ?? 0) : -1;
+      const res = JSON.parse(this.sendAndWait({ op: 'execute', sql, params })) as {
+        ok: boolean;
+        count?: number;
+        insertId?: number | null;
+      };
+      if (!res.ok) {
+        return { count: -1, lastInsertId: null };
+      }
+      return {
+        count: res.count ?? 0,
+        lastInsertId: typeof res.insertId === 'number' && res.insertId > 0 ? res.insertId : null,
+      };
     } catch {
-      return -1;
+      return { count: -1, lastInsertId: null };
     }
   }
 
@@ -113,7 +123,7 @@ export class SyncMysqlDriver implements DatabaseDriver {
     return this.querySync(sql, params);
   }
 
-  async execute(sql: string, params: unknown[]): Promise<number> {
+  async execute(sql: string, params: unknown[]): Promise<DbExecuteResult> {
     return this.executeSync(sql, params);
   }
 

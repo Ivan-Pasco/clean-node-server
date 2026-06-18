@@ -129,18 +129,28 @@ export interface BridgeResponse<T = unknown> {
 }
 
 /**
+ * Result of a write (INSERT/UPDATE/DELETE/REPLACE).
+ * `lastInsertId` is the driver-reported auto-increment id from an INSERT/REPLACE,
+ * or null for drivers/statements that don't surface one (PostgreSQL, plain UPDATE).
+ */
+export interface DbExecuteResult {
+  count: number;
+  lastInsertId: number | null;
+}
+
+/**
  * Database driver interface
  */
 export interface DatabaseDriver {
   query(sql: string, params: unknown[]): Promise<DbResult>;
-  execute(sql: string, params: unknown[]): Promise<number>;
+  execute(sql: string, params: unknown[]): Promise<DbExecuteResult>;
   beginTransaction(): Promise<string>;
   commit(txId: string): Promise<void>;
   rollback(txId: string): Promise<void>;
   close(): Promise<void>;
   // Optional synchronous methods for drivers that support them (e.g. SQLite via better-sqlite3)
   querySync?(sql: string, params: unknown[]): DbResult;
-  executeSync?(sql: string, params: unknown[]): number;
+  executeSync?(sql: string, params: unknown[]): DbExecuteResult;
   beginTransactionSync?(): string;
   commitSync?(txId: string): void;
   rollbackSync?(txId: string): void;
@@ -191,6 +201,12 @@ export interface WasmState {
   sessionStore: SessionStore;
   routeRegistry: RouteHandler[];
   database?: DatabaseDriver;
+  // Cached driver-reported id from the most recent successful INSERT/REPLACE on
+  // this request. The pool dispatches each call against a fresh connection, so
+  // MySQL LAST_INSERT_ID() and SQLite LAST_INSERT_ROWID() — both session-local —
+  // can't be served from the underlying connection (FRAME-DATA-LAST-INSERT-ID-ZERO).
+  // The bridge serves SELECT LAST_INSERT_ID() / LAST_INSERT_ROWID() from this slot.
+  lastInsertId: number | null;
   injectedCss?: string[];
   injectedLinks?: string[];
   projectRoot?: string;

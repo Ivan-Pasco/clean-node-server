@@ -9,8 +9,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { createDatabaseBridge } from '../src/bridge/database';
-import type { WasmState, DatabaseDriver, DbResult } from '../src/types';
+import {
+  createDatabaseBridge,
+  lastInsertIdAlias,
+  lastInsertIdResponse,
+  isInsert,
+} from '../src/bridge/database';
+import type { WasmState, DatabaseDriver, DbResult, DbExecuteResult } from '../src/types';
 
 interface QueryCall {
   sql: string;
@@ -397,5 +402,172 @@ describe('_db_cursor_page', () => {
     );
 
     expect(calls).toHaveLength(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// FRAME-DATA-LAST-INSERT-ID-ZERO
+//
+// MySQL LAST_INSERT_ID() and SQLite LAST_INSERT_ROWID() are session-local.
+// The MySQL worker draws each call from a pool, so the SELECT after an
+// INSERT hits a different connection and returns 0. The fix moves the
+// contract into the bridge: cache the driver-returned insert id on
+// WasmState after every successful INSERT/REPLACE, intercept the SELECT,
+// and return a synthetic single-row envelope from the cache.
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('lastInsertIdAlias', () => {
+  it('matches bare MySQL form', () => {
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID()')).toBe('id');
+  });
+
+  it('matches bare SQLite form', () => {
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ROWID()')).toBe('id');
+  });
+
+  it('preserves alias casing', () => {
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID() AS new_id')).toBe('new_id');
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID() AS NewId')).toBe('NewId');
+  });
+
+  it('tolerates whitespace, case, trailing semicolon', () => {
+    expect(lastInsertIdAlias('  select   last_insert_id()   as   id  ')).toBe('id');
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID ( ) AS id')).toBe('id');
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID() AS id;')).toBe('id');
+  });
+
+  it('rejects unrelated queries', () => {
+    expect(lastInsertIdAlias('SELECT * FROM t')).toBeNull();
+    expect(lastInsertIdAlias('SELECT id FROM t WHERE id = LAST_INSERT_ID()')).toBeNull();
+    expect(lastInsertIdAlias('SELECT LAST_INSERT_ID(), other_col FROM t')).toBeNull();
+    expect(lastInsertIdAlias('UPDATE t SET x = LAST_INSERT_ID()')).toBeNull();
+  });
+});
+
+describe('lastInsertIdResponse', () => {
+  it('returns a single-row select envelope', () => {
+    const body = JSON.parse(lastInsertIdResponse('id', 42));
+    expect(body.ok).toBe(true);
+    expect(body.data.count).toBe(1);
+    expect(body.data.rows).toEqual([{ id: 42 }]);
+  });
+
+  it('returns 0 when the cache is empty', () => {
+    const body = JSON.parse(lastInsertIdResponse('new_id', null));
+    expect(body.data.rows).toEqual([{ new_id: 0 }]);
+  });
+});
+
+describe('isInsert', () => {
+  it('recognizes INSERT and REPLACE, ignoring leading whitespace and case', () => {
+    expect(isInsert('INSERT INTO t VALUES (1)')).toBe(true);
+    expect(isInsert('  insert  into t values (1)')).toBe(true);
+    expect(isInsert('REPLACE INTO t VALUES (1)')).toBe(true);
+    expect(isInsert('SELECT * FROM t')).toBe(false);
+    expect(isInsert('UPDATE t SET x = 1')).toBe(false);
+  });
+});
+
+describe('_db_query / _db_execute — LAST_INSERT_ID interception', () => {
+  function makeMockExecuteState(opts: {
+    executeResult: DbExecuteResult;
+  }): { state: WasmState; calls: { sql: string; params: unknown[] }[] } {
+    const memory = new WebAssembly.Memory({ initial: 2 });
+    let heapPtr = 16384;
+    const exports = {
+      memory,
+      malloc: (size: number): number => {
+        const ptr = heapPtr;
+        heapPtr += size + 4;
+        return ptr;
+      },
+    } as unknown as WasmState['exports'];
+
+    const calls: { sql: string; params: unknown[] }[] = [];
+    const driver: Partial<DatabaseDriver> = {
+      querySync(sql: string, params: unknown[]): DbResult {
+        calls.push({ sql, params });
+        // Mimic the post-INSERT MySQL pool: a fresh connection returns 0.
+        return { ok: true, data: { rows: [{ id: 0 }], count: 1 } };
+      },
+      executeSync(sql: string, params: unknown[]): DbExecuteResult {
+        calls.push({ sql, params });
+        return opts.executeResult;
+      },
+    };
+
+    const state: WasmState = {
+      exports,
+      projectRoot: '/tmp',
+      database: driver as DatabaseDriver,
+      lastInsertId: null,
+      config: { verbose: false } as WasmState['config'],
+    } as unknown as WasmState;
+
+    return { state, calls };
+  }
+
+  function readReturnedString(memory: WebAssembly.Memory, ptr: number): string {
+    // writeLengthPrefixedString lays out [len:u32 LE][UTF-8 bytes]
+    const view = new DataView(memory.buffer);
+    const len = view.getUint32(ptr, true);
+    return new TextDecoder().decode(new Uint8Array(memory.buffer, ptr + 4, len));
+  }
+
+  it('caches lastInsertId after a successful INSERT and serves it via SELECT LAST_INSERT_ID()', () => {
+    const { state, calls } = makeMockExecuteState({
+      executeResult: { count: 1, lastInsertId: 42 },
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const insertSql = writeRaw(memory, 1000, 'INSERT INTO users (name) VALUES (?)');
+    const insertParams = writeRaw(memory, 1200, '["alice"]');
+    const count = (bridge as any)._db_execute(
+      insertSql.ptr, insertSql.len,
+      insertParams.ptr, insertParams.len,
+    );
+    expect(count).toBe(1);
+    expect(state.lastInsertId).toBe(42);
+
+    const selectSql = writeRaw(memory, 2000, 'SELECT LAST_INSERT_ID() AS id');
+    const retPtr = (bridge as any)._db_query(selectSql.ptr, selectSql.len, 0, 0);
+    const body = JSON.parse(readReturnedString(memory, retPtr));
+    expect(body.ok).toBe(true);
+    expect(body.data.rows).toEqual([{ id: 42 }]);
+
+    // Critical: the driver MUST NOT be queried for LAST_INSERT_ID() — that
+    // would dispatch a fresh pooled connection and return 0.
+    expect(calls.filter((c) => /LAST_INSERT_ID/i.test(c.sql))).toHaveLength(0);
+  });
+
+  it('serves 0 from the cache when no INSERT has happened yet', () => {
+    const { state } = makeMockExecuteState({
+      executeResult: { count: 0, lastInsertId: null },
+    });
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const selectSql = writeRaw(memory, 2000, 'SELECT LAST_INSERT_ROWID()');
+    const retPtr = (bridge as any)._db_query(selectSql.ptr, selectSql.len, 0, 0);
+    const body = JSON.parse(readReturnedString(memory, retPtr));
+    expect(body.data.rows).toEqual([{ id: 0 }]);
+  });
+
+  it('does not overwrite lastInsertId on UPDATE/DELETE', () => {
+    const { state } = makeMockExecuteState({
+      executeResult: { count: 3, lastInsertId: null },
+    });
+    state.lastInsertId = 99;
+    const bridge = createDatabaseBridge(() => state);
+    const memory = state.exports.memory!;
+
+    const updateSql = writeRaw(memory, 1000, 'UPDATE users SET name = ? WHERE id = ?');
+    const updateParams = writeRaw(memory, 1200, '["bob",1]');
+    (bridge as any)._db_execute(
+      updateSql.ptr, updateSql.len,
+      updateParams.ptr, updateParams.len,
+    );
+    expect(state.lastInsertId).toBe(99);
   });
 });

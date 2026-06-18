@@ -1,6 +1,6 @@
 import * as path from 'path';
 import { Worker } from 'worker_threads';
-import { DatabaseDriver, DbResult } from '../types';
+import { DatabaseDriver, DbExecuteResult, DbResult } from '../types';
 
 const IDLE = 0;
 const PENDING = 1;
@@ -80,12 +80,16 @@ export class SyncPostgresDriver implements DatabaseDriver {
     }
   }
 
-  executeSync(sql: string, params: unknown[]): number {
+  executeSync(sql: string, params: unknown[]): DbExecuteResult {
     try {
       const res = JSON.parse(this.sendAndWait({ op: 'execute', sql, params })) as { ok: boolean; count?: number };
-      return res.ok ? (res.count ?? 0) : -1;
+      // PostgreSQL has no LAST_INSERT_ID() / LAST_INSERT_ROWID() concept — callers
+      // must use INSERT ... RETURNING id. Always report null here.
+      return res.ok
+        ? { count: res.count ?? 0, lastInsertId: null }
+        : { count: -1, lastInsertId: null };
     } catch {
-      return -1;
+      return { count: -1, lastInsertId: null };
     }
   }
 
@@ -117,7 +121,7 @@ export class SyncPostgresDriver implements DatabaseDriver {
     return this.querySync(sql, params);
   }
 
-  async execute(sql: string, params: unknown[]): Promise<number> {
+  async execute(sql: string, params: unknown[]): Promise<DbExecuteResult> {
     return this.executeSync(sql, params);
   }
 

@@ -1,6 +1,12 @@
 import Database from 'better-sqlite3';
-import { DatabaseDriver, DbResult } from '../types';
+import { DatabaseDriver, DbExecuteResult, DbResult } from '../types';
 import { formatDbResult, formatDbError } from './index';
+
+function coerceInsertRowId(value: number | bigint | undefined): number | null {
+  if (typeof value === 'number' && value > 0) return value;
+  if (typeof value === 'bigint' && value > 0n) return Number(value);
+  return null;
+}
 
 /**
  * SQLite database driver using better-sqlite3 (synchronous)
@@ -38,16 +44,19 @@ export class SqliteDriver implements DatabaseDriver {
   }
 
   /**
-   * Execute a statement and return affected row count
+   * Execute a statement and return affected row count + last_insert_rowid.
    */
-  async execute(sql: string, params: unknown[]): Promise<number> {
+  async execute(sql: string, params: unknown[]): Promise<DbExecuteResult> {
     try {
       const stmt = this.db.prepare(sql);
       const result = stmt.run(...params);
-      return result.changes;
+      return {
+        count: result.changes,
+        lastInsertId: coerceInsertRowId(result.lastInsertRowid),
+      };
     } catch (err) {
       console.error('Database execute error:', err);
-      return -1;
+      return { count: -1, lastInsertId: null };
     }
   }
 
@@ -106,14 +115,17 @@ export class SqliteDriver implements DatabaseDriver {
     }
   }
 
-  executeSync(sql: string, params: unknown[]): number {
+  executeSync(sql: string, params: unknown[]): DbExecuteResult {
     try {
       const stmt = this.db.prepare(sql);
       const result = stmt.run(...params);
-      return result.changes;
+      return {
+        count: result.changes,
+        lastInsertId: coerceInsertRowId(result.lastInsertRowid),
+      };
     } catch (err) {
       console.error('Database execute error:', err);
-      return -1;
+      return { count: -1, lastInsertId: null };
     }
   }
 

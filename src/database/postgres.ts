@@ -1,5 +1,5 @@
 import { Pool, PoolClient } from 'pg';
-import { DatabaseDriver, DbResult } from '../types';
+import { DatabaseDriver, DbExecuteResult, DbResult } from '../types';
 import { formatDbResult, formatDbError } from './index';
 
 /**
@@ -32,15 +32,17 @@ export class PostgresDriver implements DatabaseDriver {
   }
 
   /**
-   * Execute a statement and return affected row count
+   * Execute a statement and return affected row count.
+   * PostgreSQL has no LAST_INSERT_ID() / LAST_INSERT_ROWID() — callers use
+   * INSERT ... RETURNING id instead, so lastInsertId is always null here.
    */
-  async execute(sql: string, params: unknown[]): Promise<number> {
+  async execute(sql: string, params: unknown[]): Promise<DbExecuteResult> {
     try {
       const result = await this.pool.query(sql, params);
-      return result.rowCount ?? 0;
+      return { count: result.rowCount ?? 0, lastInsertId: null };
     } catch (err) {
       console.error('Database execute error:', err);
-      return -1;
+      return { count: -1, lastInsertId: null };
     }
   }
 

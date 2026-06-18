@@ -138,6 +138,7 @@ export function createWasmState(
     sessionStore,
     routeRegistry,
     database,
+    lastInsertId: null,
     memoryStats,
     httpClient: {
       timeout: 30000,
@@ -157,6 +158,7 @@ export function createWasmState(
 export function setRequestContext(state: WasmState, context: RequestContext): void {
   state.requestContext = context;
   state.response = createDefaultResponse();
+  state.lastInsertId = null;
 }
 
 /**
