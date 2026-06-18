@@ -24,10 +24,17 @@ let refCounts: Map<number, number> = new Map();
 export function createMemoryRuntimeBridge(getState: () => WasmState) {
   return {
     /**
-     * Allocate memory of given size
-     * Returns pointer to allocated memory
+     * Allocate memory of given size.
+     *
+     * Compiler-emitted calling convention: `mem_alloc(type_id: i32, size: i32) -> i32`.
+     * The first argument is a type tag the compiler uses for telemetry; the host
+     * implementation ignores it. The second argument is the byte size to allocate.
+     * Spec: foundation/platform-architecture/function-registry.toml (`mem_alloc`).
+     *
+     * Matches clean-server/host-bridge/src/wasm_linker/memory.rs which also
+     * declares `(_type_id, size)`.
      */
-    mem_alloc(size: number): number {
+    mem_alloc(_typeId: number, size: number): number {
       const state = getState();
 
       if (size <= 0) {
