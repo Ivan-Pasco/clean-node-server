@@ -1,5 +1,11 @@
 import { workerData, parentPort } from 'worker_threads';
-import mysql, { ExecuteValues } from 'mysql2/promise';
+import mysql from 'mysql2/promise';
+import {
+  handleRequest,
+  WorkerRequest,
+  WorkerResponse,
+  ConnLike,
+} from './mysql-worker-impl';
 
 const DONE = 2;
 
@@ -12,6 +18,11 @@ interface WorkerInit {
 
 const { connectionString, controlBuffer, dataBuffer, maxConnections } = workerData as WorkerInit;
 
+// ctrl layout (4 × i32):
+//   ctrl[0] = state (IDLE/PENDING/DONE)
+//   ctrl[1] = payload length
+//   ctrl[2] = current request seq (main thread writes before posting)
+//   ctrl[3] = response seq (worker writes when sending response)
 const ctrl = new Int32Array(controlBuffer);
 const dataBuf = new Uint8Array(dataBuffer);
 const encoder = new TextEncoder();
@@ -24,9 +35,28 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
-const transactions = new Map<string, mysql.PoolConnection>();
+const transactions = new Map<string, ConnLike>();
 
-function writeResponse(response: unknown): void {
+function workerLog(level: 'warn' | 'error' | 'info', msg: string, extra?: Record<string, unknown>): void {
+  const payload = extra ? `${msg} ${JSON.stringify(extra)}` : msg;
+  if (level === 'error') {
+    console.error(`[mysql-worker] ${payload}`);
+  } else if (level === 'warn') {
+    console.warn(`[mysql-worker] ${payload}`);
+  } else {
+    console.info(`[mysql-worker] ${payload}`);
+  }
+}
+
+function writeResponse(response: WorkerResponse, capturedSeq: number): void {
+  // RUNTIME-DB-POOL-WEDGE: when the main thread times out a sendAndWait it
+  // bumps the seq forward. If we are about to respond for an older seq, the
+  // main thread has already moved on — writing into dataBuf would clobber the
+  // next request's payload. Drop the response silently.
+  if (Atomics.load(ctrl, 2) !== capturedSeq) {
+    return;
+  }
+
   const json = JSON.stringify(response);
   const bytes = encoder.encode(json);
 
@@ -42,6 +72,7 @@ function writeResponse(response: unknown): void {
     Atomics.store(ctrl, 1, bytes.length);
   }
 
+  Atomics.store(ctrl, 3, capturedSeq);
   Atomics.store(ctrl, 0, DONE);
   Atomics.notify(ctrl, 0, 1);
 }
@@ -51,102 +82,30 @@ if (!parentPort) {
 }
 
 parentPort.on('message', async () => {
+  // Capture the seq the main thread set for this request. If we get preempted
+  // (the main thread times out and posts a new request before we respond), the
+  // seq guard in writeResponse will silently drop our stale response.
+  const capturedSeq = Atomics.load(ctrl, 2);
+  let req: WorkerRequest;
   try {
     const reqLen = Atomics.load(ctrl, 1);
-    const req = JSON.parse(decoder.decode(dataBuf.slice(0, reqLen))) as {
-      op: string;
-      sql?: string;
-      params?: unknown[];
-      txId?: string;
-    };
-
-    switch (req.op) {
-      case 'query': {
-        const conn = req.txId ? transactions.get(req.txId) : undefined;
-        const qparams = (req.params ?? []) as ExecuteValues;
-        const [rows] = conn
-          ? await conn.query(req.sql!, qparams)
-          : await pool.query(req.sql!, qparams);
-        const rowArray = Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
-        writeResponse({ ok: true, data: { ok: true, data: { rows: rowArray, count: rowArray.length } } });
-        break;
-      }
-
-      case 'execute': {
-        const conn = req.txId ? transactions.get(req.txId) : undefined;
-        const params = (req.params ?? []) as ExecuteValues;
-        const [result] = conn
-          ? await conn.execute(req.sql!, params)
-          : await pool.execute(req.sql!, params);
-        const header = result as mysql.ResultSetHeader;
-        const affectedRows = header.affectedRows ?? 0;
-        // header.insertId is 0 for non-insert statements (UPDATE/DELETE) and
-        // the auto-increment value (or first row's id for multi-row inserts)
-        // for INSERT/REPLACE. Surface 0 as null so the bridge can distinguish
-        // "no insert id available" from a real id of 0.
-        const rawInsertId = header.insertId;
-        const insertId =
-          typeof rawInsertId === 'number' && rawInsertId > 0 ? rawInsertId : null;
-        writeResponse({ ok: true, count: affectedRows, insertId });
-        break;
-      }
-
-      case 'begin': {
-        const conn = await pool.getConnection();
-        await conn.beginTransaction();
-        const txId = `tx_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-        transactions.set(txId, conn);
-        writeResponse({ ok: true, txId });
-        break;
-      }
-
-      case 'commit': {
-        const conn = transactions.get(req.txId!);
-        if (!conn) {
-          writeResponse({ ok: false, err: { code: 'TX_NOT_FOUND', message: `Transaction not found: ${req.txId}` } });
-          break;
-        }
-        try {
-          await conn.commit();
-        } finally {
-          conn.release();
-          transactions.delete(req.txId!);
-        }
-        writeResponse({ ok: true });
-        break;
-      }
-
-      case 'rollback': {
-        const conn = transactions.get(req.txId!);
-        if (!conn) {
-          writeResponse({ ok: false, err: { code: 'TX_NOT_FOUND', message: `Transaction not found: ${req.txId}` } });
-          break;
-        }
-        try {
-          await conn.rollback();
-        } finally {
-          conn.release();
-          transactions.delete(req.txId!);
-        }
-        writeResponse({ ok: true });
-        break;
-      }
-
-      case 'close': {
-        for (const [, conn] of transactions.entries()) {
-          try { await conn.rollback(); } catch { /* ignore */ }
-          conn.release();
-        }
-        transactions.clear();
-        await pool.end();
-        writeResponse({ ok: true });
-        break;
-      }
-
-      default:
-        writeResponse({ ok: false, err: { code: 'UNKNOWN_OP', message: `Unknown operation: ${req.op}` } });
-    }
+    req = JSON.parse(decoder.decode(dataBuf.slice(0, reqLen))) as WorkerRequest;
   } catch (err) {
-    writeResponse({ ok: false, err: { code: 'DB_ERROR', message: (err as Error).message } });
+    writeResponse({ ok: false, err: { code: 'BAD_REQUEST', message: (err as Error).message } }, capturedSeq);
+    return;
+  }
+
+  try {
+    const response = await handleRequest(req, {
+      pool: pool as unknown as Parameters<typeof handleRequest>[1]['pool'],
+      transactions,
+      log: workerLog,
+    });
+    writeResponse(response, capturedSeq);
+  } catch (err) {
+    // handleRequest catches its own errors, but guard the message-handler
+    // boundary so a thrown error never deadlocks the main thread waiting on
+    // Atomics.wait.
+    writeResponse({ ok: false, err: { code: 'DB_ERROR', message: (err as Error).message } }, capturedSeq);
   }
 });

@@ -29,3 +29,6 @@ coverage/
 # Temp files
 *.tmp
 tmp/
+
+# Runtime state (jobs sqlite, etc.)
+.clean/

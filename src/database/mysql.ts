@@ -4,7 +4,9 @@ import { DatabaseDriver, DbExecuteResult, DbResult } from '../types';
 
 const IDLE = 0;
 const PENDING = 1;
-const CONTROL_BYTES = 8;
+// ctrl layout (4 × i32):
+//   ctrl[0] = state, ctrl[1] = len, ctrl[2] = request seq, ctrl[3] = response seq
+const CONTROL_BYTES = 16;
 const DATA_BUFFER_SIZE = 4 * 1024 * 1024; // 4 MB
 const TIMEOUT_MS = 30_000;
 
@@ -15,6 +17,11 @@ export class SyncMysqlDriver implements DatabaseDriver {
   private encoder = new TextEncoder();
   private decoder = new TextDecoder();
   private inFlight = false;
+  // RUNTIME-DB-POOL-WEDGE: monotonically increasing per-request seq so the
+  // worker can detect when its response is stale (main thread timed out and
+  // moved on) and silently discard it instead of corrupting the next call's
+  // payload buffer.
+  private seq = 0;
 
   constructor(connectionString: string, maxConnections?: number) {
     const controlBuffer = new SharedArrayBuffer(CONTROL_BYTES);
@@ -43,6 +50,10 @@ export class SyncMysqlDriver implements DatabaseDriver {
         throw new Error(`Request payload ${reqBytes.length} bytes exceeds buffer ${DATA_BUFFER_SIZE}`);
       }
 
+      const mySeq = ++this.seq;
+      // Write seq BEFORE the worker can observe PENDING: the worker reads
+      // ctrl[2] at handler entry and uses it to drop stale responses.
+      Atomics.store(this.ctrl, 2, mySeq);
       this.dataBuf.set(reqBytes);
       Atomics.store(this.ctrl, 1, reqBytes.length);
       Atomics.store(this.ctrl, 0, PENDING);
@@ -50,10 +61,21 @@ export class SyncMysqlDriver implements DatabaseDriver {
 
       const outcome = Atomics.wait(this.ctrl, 0, PENDING, TIMEOUT_MS);
       if (outcome === 'timed-out') {
+        // Bump seq so the wedged worker's eventual writeResponse is dropped
+        // (it'll see ctrl[2] has moved past its captured seq).
+        Atomics.store(this.ctrl, 2, ++this.seq);
         Atomics.store(this.ctrl, 0, IDLE);
         throw new Error(`MySQL query timed out after ${TIMEOUT_MS}ms`);
       }
 
+      const respSeq = Atomics.load(this.ctrl, 3);
+      if (respSeq !== mySeq) {
+        // Defensive: a previous stale handler wrote DONE under us. Treat as
+        // missing response. The worker's seq guard should prevent this, but
+        // surface it cleanly if it ever fires instead of returning garbage.
+        Atomics.store(this.ctrl, 0, IDLE);
+        throw new Error(`MySQL worker returned stale response (seq ${respSeq}, expected ${mySeq})`);
+      }
       const respLen = Atomics.load(this.ctrl, 1);
       const json = this.decoder.decode(this.dataBuf.slice(0, respLen));
       Atomics.store(this.ctrl, 0, IDLE);
