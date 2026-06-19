@@ -76,6 +76,35 @@ describe('RouteRegistry', () => {
       expect(match?.route.handlerName).toBe(handler(0));
     });
 
+    it('should fall back to GET when matching HEAD (HTTP-HEAD-RETURNS-404)', () => {
+      // RFC 9110: HEAD is identical to GET except the server MUST NOT send the
+      // body. Without a fallback, HEAD requests against GET-registered routes
+      // return 404 and our /metrics, /health, and every WASM-registered route
+      // become invisible to load balancers and uptime checks that probe via HEAD.
+      registry.register('GET', '/users', handler(0));
+
+      const match = registry.match('HEAD', '/users');
+      expect(match).not.toBeNull();
+      expect(match?.route.handlerName).toBe(handler(0));
+    });
+
+    it('should prefer an explicit HEAD route over GET fallback', () => {
+      // If both are registered, HEAD wins for HEAD requests so a handler can
+      // emit HEAD-only headers (e.g. Last-Modified) without running the GET path.
+      registry.register('GET', '/users', handler(0));
+      registry.register('HEAD', '/users', handler(1));
+
+      const match = registry.match('HEAD', '/users');
+      expect(match?.route.handlerName).toBe(handler(1));
+    });
+
+    it('should still 404 HEAD when no GET or HEAD route is registered', () => {
+      registry.register('POST', '/users', handler(0));
+
+      const match = registry.match('HEAD', '/users');
+      expect(match).toBeNull();
+    });
+
     it('should preserve a non-sequential framework-chosen handler name (RTE002 guard)', () => {
       // The framework picks names like __route_handler_get__ping rather than
       // sequential indexes. node-server must store the name verbatim and

@@ -38,6 +38,21 @@ export class RouteRegistry {
   match(method: string, path: string): { route: RouteHandler; params: Record<string, string> } | null {
     const upperMethod = method.toUpperCase();
 
+    const found = this.matchMethod(upperMethod, path);
+    if (found) return found;
+
+    // RFC 9110 §9.3.2: HEAD is identical to GET except the body MUST NOT be sent.
+    // Express strips the body in res.send() when req.method === 'HEAD', so it is
+    // safe to dispatch the GET handler. Explicit HEAD routes take precedence
+    // because the first pass above already checked them.
+    if (upperMethod === 'HEAD') {
+      return this.matchMethod('GET', path);
+    }
+
+    return null;
+  }
+
+  private matchMethod(upperMethod: string, path: string): { route: RouteHandler; params: Record<string, string> } | null {
     for (const route of this.routes) {
       if (route.method !== upperMethod && route.method !== '*') {
         continue;
@@ -52,7 +67,6 @@ export class RouteRegistry {
         return { route, params };
       }
     }
-
     return null;
   }
 
