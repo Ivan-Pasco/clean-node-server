@@ -65,16 +65,34 @@ export function writeLengthPrefixedString(exports: WasmExports, str: string): nu
 
   const ptr = exports.malloc(totalSize);
   if (ptr === 0) {
-    throw new Error('WASM malloc returned null pointer');
+    // Compiler ≥ 0.30.321 returns 0 from __malloc when memory.grow fails
+    // (MALLOC-IGNORES-MEMORY-GROW-FAILURE). The cause is one of:
+    //   - The WASM module's declared maximum memory has been reached.
+    //   - The host-configured preGrowMemoryBytes / system limit refused grow.
+    //   - The WASM program has an unbounded allocation pattern (e.g. an
+    //     infinite loop concatenating strings) that walked past any reasonable
+    //     cap.
+    const bufferMB = (exports.memory.buffer.byteLength / 1024 / 1024).toFixed(1);
+    throw new Error(
+      `WASM malloc returned null: need ${totalSize} bytes, buffer is ${bufferMB} MB. ` +
+      `Memory cap reached — either raise preGrowMemoryBytes, raise the WASM module's ` +
+      `declared maximum, or audit the program for unbounded allocations.`
+    );
   }
 
   // Snap buffer AFTER malloc — malloc may have grown WASM memory, which detaches
   // the previous ArrayBuffer and creates a new one. All writes must use this snapshot.
   const buffer = exports.memory.buffer;
   if (ptr + totalSize > buffer.byteLength) {
+    // Defensive guard: pre-0.30.321 compilers (or any other allocator) could
+    // return a non-zero pointer past the buffer end. With compiler ≥ 0.30.321
+    // this path is unreachable for native __malloc — the null-on-grow-failure
+    // contract is enforced upstream. If we hit it, the compiler regressed or a
+    // third-party allocator is in use; report the raw bounds rather than
+    // guessing at NSR002/SEM002.
     throw new Error(
-      `WASM heap exhausted: need ${totalSize} bytes at ptr ${ptr}, buffer is ${buffer.byteLength} bytes. ` +
-      `This usually means an infinite loop exhausted the pre-grown heap (see NSR002/SEM002).`
+      `WASM allocator returned out-of-bounds pointer: ptr=${ptr}, need=${totalSize}, ` +
+      `buffer=${buffer.byteLength}. The allocator is not honoring the null-on-failure contract.`
     );
   }
   const view = new DataView(buffer);
