@@ -188,14 +188,48 @@ export function createStringBridge(getState: () => WasmState) {
     },
 
     /**
-     * Split string by delimiter (returns JSON array)
+     * Split string by delimiter — returns a Clean Language list<string> pointer.
+     *
+     * Layout consumed by the compiler's iterate codegen (HOST_BRIDGE_STRING_SPLIT):
+     *   [0..4]   length    (u32 LE)
+     *   [4..8]   capacity  (u32 LE)
+     *   [8..12]  type_id   (u32 LE, 3 = string — informational)
+     *   [12..16] padding
+     *   [16+i*4] LP-string pointer for element i
+     *
+     * Returning a JSON-encoded LP string here would break `iterate part in parts`:
+     * the loop reads size from offset 0, so it would consume the JSON byte length
+     * (e.g. 17 for `["a","b","c","d"]`) and walk garbage off the end of the JSON.
      */
     // LP-pointer convention: one i32 LP-pointer per argument (no compiler wrapper)
     string_split(lpStr: number, lpDelim: number): number {
       const state = getState();
       const str = readPrefixedString(state, lpStr);
       const delim = readPrefixedString(state, lpDelim);
-      return writeString(state, JSON.stringify(str.split(delim)));
+      const parts = str.split(delim);
+
+      const elementPtrs = parts.map((p) => writeString(state, p));
+
+      const HEADER_SIZE = 16;
+      const ELEM_SIZE = 4;
+      const listSize = HEADER_SIZE + parts.length * ELEM_SIZE;
+      const listPtr = state.exports.malloc(listSize);
+      if (listPtr === 0) {
+        throw new Error(
+          `string_split: malloc returned null for ${listSize}-byte list block`
+        );
+      }
+
+      // Re-snap memory after malloc — it may have grown and detached the prior buffer.
+      const view = new DataView(state.exports.memory.buffer);
+      view.setUint32(listPtr, parts.length, true);
+      view.setUint32(listPtr + 4, parts.length, true);
+      view.setUint32(listPtr + 8, 3, true);
+      view.setUint32(listPtr + 12, 0, true);
+      for (let i = 0; i < elementPtrs.length; i++) {
+        view.setUint32(listPtr + HEADER_SIZE + i * ELEM_SIZE, elementPtrs[i], true);
+      }
+      return listPtr;
     },
 
     /**

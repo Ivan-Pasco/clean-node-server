@@ -162,22 +162,73 @@ describe('String Bridge ABI — LP-pointer convention', () => {
   });
 
   describe('string_split', () => {
-    it('splits by delimiter, returns JSON array, via LP-pointer args', () => {
+    // CONTRACT: string_split returns a Clean Language list<string> pointer, NOT
+    // a JSON-encoded LP string. Layout: [length@0, capacity@4, type_id@8,
+    // padding@12, ptr@16+i*4]. Each element pointer addresses a length-prefixed
+    // string. The compiler's `iterate part in parts` reads this layout
+    // directly. Pre-fix this function returned LP-JSON and `iterate` traps —
+    // HOST_BRIDGE_STRING_SPLIT_RETURNS_JSON_STRING_NOT_LIST.
+
+    /** Decode a Clean list<string> from WASM memory at listPtr. */
+    function readStringList(mem: WebAssembly.Memory, listPtr: number): string[] {
+      const view = new DataView(mem.buffer);
+      const length = view.getUint32(listPtr, true);
+      const out: string[] = [];
+      for (let i = 0; i < length; i++) {
+        const elemPtr = view.getUint32(listPtr + 16 + i * 4, true);
+        out.push(readLengthPrefixedString(mem, elemPtr));
+      }
+      return out;
+    }
+
+    it('returns a list-layout pointer with the split parts, via LP-pointer args', () => {
       const state = makeMockState(memory, HEAP_START);
       const bridge = createStringBridge(() => state);
 
       const resultPtr = bridge.string_split(ADDR_FOO, ADDR_DASH);
-      expect(JSON.parse(readLengthPrefixedString(memory, resultPtr))).toEqual(['foo', 'bar', 'baz']);
+      expect(readStringList(memory, resultPtr)).toEqual(['foo', 'bar', 'baz']);
     });
 
-    it('returns single-element array when delimiter absent', () => {
+    it('returns single-element list when delimiter absent', () => {
       const pipeAddr = 960;
       writeLPAt(memory, pipeAddr, '|');
       const state = makeMockState(memory, HEAP_START);
       const bridge = createStringBridge(() => state);
 
       const resultPtr = bridge.string_split(ADDR_FOO, pipeAddr);
-      expect(JSON.parse(readLengthPrefixedString(memory, resultPtr))).toEqual(['foo-bar-baz']);
+      expect(readStringList(memory, resultPtr)).toEqual(['foo-bar-baz']);
+    });
+
+    it('list header matches the layout the compiler `iterate` reads (length@0, capacity@4, type_id@8)', () => {
+      const state = makeMockState(memory, HEAP_START);
+      const bridge = createStringBridge(() => state);
+
+      const resultPtr = bridge.string_split(ADDR_FOO, ADDR_DASH);
+      const view = new DataView(memory.buffer);
+      expect(view.getUint32(resultPtr + 0, true)).toBe(3);  // length
+      expect(view.getUint32(resultPtr + 4, true)).toBe(3);  // capacity
+      expect(view.getUint32(resultPtr + 8, true)).toBe(3);  // type_id (3 = string)
+      expect(view.getUint32(resultPtr + 12, true)).toBe(0); // padding
+    });
+
+    it('regression: iterate-style read counts and decodes 4 parts for "a```b```c```d" split on "```"', () => {
+      // This is the exact failure mode from
+      // HOST_BRIDGE_STRING_SPLIT_RETURNS_JSON_STRING_NOT_LIST: when the bridge
+      // returned LP-JSON, an iterate over a 4-element split walked 17 times
+      // (the JSON byte length) and trapped. The list layout below must keep
+      // size@0 == 4 so iterate runs exactly 4 times.
+      const srcAddr = 1024;
+      const sepAddr = 1152;
+      writeLPAt(memory, srcAddr, 'a```b```c```d');
+      writeLPAt(memory, sepAddr, '```');
+      const state = makeMockState(memory, HEAP_START);
+      const bridge = createStringBridge(() => state);
+
+      const resultPtr = bridge.string_split(srcAddr, sepAddr);
+      const view = new DataView(memory.buffer);
+      const sizeAt0 = view.getUint32(resultPtr, true);
+      expect(sizeAt0).toBe(4);
+      expect(readStringList(memory, resultPtr)).toEqual(['a', 'b', 'c', 'd']);
     });
   });
 });
