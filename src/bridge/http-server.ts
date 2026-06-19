@@ -432,7 +432,15 @@ export function createHttpServerBridge(getState: () => WasmState) {
 
     /**
      * Extract a value from JSON by dot-path
-     * e.g., _json_get('{"user":{"email":"a@b.com"}}', 'user.email') -> '"a@b.com"'
+     * e.g., _json_get('{"user":{"email":"a@b.com"}}', 'user.email') -> 'a@b.com'
+     *
+     * Mirrors clean-server/host-bridge `_json_get`: numeric path parts index
+     * arrays, string path parts access own object keys only. Reaching a
+     * non-traversable value or a missing key returns the empty string — this
+     * is the termination signal for Clean Language loops of the form
+     * `while title != "" : title = json.get(json, "items." + i.toString() + ".title")`.
+     * Returning Array.prototype methods (`length`, `push`, `constructor`, …)
+     * for parts that happen to match would silently make those loops run forever.
      */
     _json_get(
       jsonPtr: number,
@@ -453,7 +461,25 @@ export function createHttpServerBridge(getState: () => WasmState) {
           if (current === null || current === undefined) {
             return writeString(state, '');
           }
-          if (typeof current === 'object' && current !== null) {
+          if (Array.isArray(current)) {
+            // /^\d+$/ matches the integer index forms Clean Language emits via
+            // integer.toString. Non-numeric parts on an array (including
+            // "length") do not traverse — they terminate.
+            if (/^\d+$/.test(part)) {
+              const idx = Number(part);
+              if (idx >= current.length) {
+                return writeString(state, '');
+              }
+              current = current[idx];
+            } else {
+              return writeString(state, '');
+            }
+          } else if (typeof current === 'object') {
+            // Own-key access only — Object.prototype methods (`toString`,
+            // `constructor`, …) must not be returned as values.
+            if (!Object.prototype.hasOwnProperty.call(current, part)) {
+              return writeString(state, '');
+            }
             current = (current as Record<string, unknown>)[part];
           } else {
             return writeString(state, '');
