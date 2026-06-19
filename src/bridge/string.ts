@@ -2,6 +2,68 @@ import { WasmState } from '../types';
 import { readString, readPrefixedString, writeString } from './helpers';
 
 /**
+ * Concatenate two length-prefixed strings at the BYTE level.
+ *
+ * NSR002: the compiler emits byte-position substring inline (e.g. for
+ * `s.substring(i, i + 1)`), so when WASM code iterates a string in a
+ * `i = 0; while i < s.length(): i = i + 1` loop and the string contains
+ * multibyte UTF-8 (em-dash E2 80 94, arrow E2 86 92, CJK, emoji), each
+ * iteration produces a length-prefixed fragment containing a single
+ * continuation byte. Decoding [E2] alone as UTF-8 yields U+FFFD, decoding
+ * [80] alone yields another U+FFFD, etc. The previous string_concat read
+ * each input through TextDecoder before JS-concatenating, so every
+ * multibyte char emerged from the loop as three U+FFFD characters — visible
+ * on production cleanlanguage.dev /tutorials as 38 replacement chars and a
+ * truncated body where the byte/char-count mismatch broke downstream loops.
+ *
+ * Byte-level concat reassembles the fragments into a valid UTF-8 sequence
+ * BEFORE any decoding happens, so the final state.response.body decode at
+ * the response boundary sees clean UTF-8. Rust clean-server's bridge has the
+ * same property because Rust's Vec<u8> path never invokes a string decoder
+ * mid-concat — this brings node-server into parity with it.
+ *
+ * The function does not allocate via the WASM allocator unless both inputs
+ * are non-empty: a zero pointer is the standard empty-string marker on this
+ * ABI, so concat(0, X) and concat(X, 0) return X verbatim — fewer WASM mallocs
+ * during the 30-card render loop, fewer chances for memory.grow to fire
+ * mid-request and detach pre-grow DataViews.
+ */
+function concatLengthPrefixed(state: WasmState, lpA: number, lpB: number): number {
+  const memory = state.exports.memory;
+
+  let lenA = 0;
+  let lenB = 0;
+  if (lpA !== 0) {
+    lenA = new DataView(memory.buffer).getUint32(lpA, true);
+  }
+  if (lpB !== 0) {
+    lenB = new DataView(memory.buffer).getUint32(lpB, true);
+  }
+  if (lenA === 0 && lenB === 0) return 0;
+  if (lenA === 0) return lpB;
+  if (lenB === 0) return lpA;
+
+  const totalLen = lenA + lenB;
+  const ptr = state.exports.malloc(4 + totalLen);
+  if (ptr === 0) {
+    const bufferMB = (memory.buffer.byteLength / 1024 / 1024).toFixed(1);
+    throw new Error(
+      `WASM malloc returned null in string.concat: need ${4 + totalLen} bytes, ` +
+      `buffer is ${bufferMB} MB.`,
+    );
+  }
+
+  // Snap buffer AFTER malloc — malloc may have grown WASM memory, which detaches
+  // the previous ArrayBuffer. All reads + writes from here use this snapshot.
+  const buffer = memory.buffer;
+  const bytes = new Uint8Array(buffer);
+  new DataView(buffer).setUint32(ptr, totalLen, true);
+  if (lenA > 0) bytes.copyWithin(ptr + 4, lpA + 4, lpA + 4 + lenA);
+  if (lenB > 0) bytes.copyWithin(ptr + 4 + lenA, lpB + 4, lpB + 4 + lenB);
+  return ptr;
+}
+
+/**
  * Create string bridge functions
  *
  * Provides string manipulation operations for WASM modules.
@@ -13,15 +75,18 @@ export function createStringBridge(getState: () => WasmState) {
      * ABI: LP-pointer convention — WASM calls this directly with one i32 per string
      * (a pointer to [4-byte LE length][UTF-8 content]). No compiler wrapper unpacks
      * these into ptr+len pairs, so do NOT use (ptr, len, ptr, len) signatures here.
+     *
+     * NSR002: this is byte-level concatenation. The previous decode-via-TextDecoder
+     * round-trip mangled multibyte UTF-8 fragments emitted by the compiler's
+     * byte-position substring. See concatLengthPrefixed above for the full
+     * write-up.
      */
     'string.concat'(lpA: number, lpB: number): number {
-      const state = getState();
-      return writeString(state, readPrefixedString(state, lpA) + readPrefixedString(state, lpB));
+      return concatLengthPrefixed(getState(), lpA, lpB);
     },
 
     string_concat(lpA: number, lpB: number): number {
-      const state = getState();
-      return writeString(state, readPrefixedString(state, lpA) + readPrefixedString(state, lpB));
+      return concatLengthPrefixed(getState(), lpA, lpB);
     },
 
     /**
