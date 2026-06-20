@@ -22,11 +22,15 @@ import { readString, readPrefixedString, writeString } from './helpers';
  * same property because Rust's Vec<u8> path never invokes a string decoder
  * mid-concat — this brings node-server into parity with it.
  *
- * The function does not allocate via the WASM allocator unless both inputs
- * are non-empty: a zero pointer is the standard empty-string marker on this
- * ABI, so concat(0, X) and concat(X, 0) return X verbatim — fewer WASM mallocs
- * during the 30-card render loop, fewer chances for memory.grow to fire
- * mid-request and detach pre-grow DataViews.
+ * Ownership: the returned pointer is ALWAYS a fresh allocation (except when
+ * both inputs are empty, which returns the 0-pointer empty marker). The
+ * 0.1.63 version of this function returned one of the input pointers
+ * verbatim when the other was empty as a malloc-saving optimization; that
+ * aliased the input into the result and crashed prod /tutorials with a
+ * deterministic "memory access out of bounds" WASM trap on the 30-card
+ * render loop, because the compiler-emitted accumulator pattern reuses /
+ * recycles its inputs after a concat call. Rust clean-server's bridge also
+ * always allocates a fresh Vec<u8>, so this brings node-server into parity.
  */
 function concatLengthPrefixed(state: WasmState, lpA: number, lpB: number): number {
   const memory = state.exports.memory;
@@ -40,8 +44,6 @@ function concatLengthPrefixed(state: WasmState, lpA: number, lpB: number): numbe
     lenB = new DataView(memory.buffer).getUint32(lpB, true);
   }
   if (lenA === 0 && lenB === 0) return 0;
-  if (lenA === 0) return lpB;
-  if (lenB === 0) return lpA;
 
   const totalLen = lenA + lenB;
   const ptr = state.exports.malloc(4 + totalLen);

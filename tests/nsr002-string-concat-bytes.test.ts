@@ -168,20 +168,51 @@ describe('NSR002 — string.concat byte-level contract', () => {
     expect(bridge['string.concat'](a, b)).toBe(0);
   });
 
-  it('empty + non-empty returns the non-empty pointer verbatim (no realloc)', () => {
+  it('empty + non-empty returns a fresh buffer with the non-empty content', () => {
+    // Ownership contract: concat returns a buffer the caller exclusively owns.
+    // The previous "alias the non-empty input" optimization caused a deterministic
+    // WASM trap on prod /tutorials (0.1.63 regression of NSR002 family) because the
+    // compiler-emitted accumulator pattern would free or overwrite one input after
+    // the call, leaving the returned alias pointing at dead memory.
     const empty = writeBytes(state, []);
     const non = writeBytes(state, [0x68, 0x69]);
     const r1 = bridge['string.concat'](empty, non);
     const r2 = bridge['string.concat'](non, empty);
-    expect(r1).toBe(non);
-    expect(r2).toBe(non);
+    expect(r1).not.toBe(non);
+    expect(r2).not.toBe(non);
+    expect(readLengthPrefixedString(memory, r1)).toBe('hi');
+    expect(readLengthPrefixedString(memory, r2)).toBe('hi');
   });
 
   it('zero pointer is treated as empty (compiler may pass 0 for the empty literal)', () => {
     const non = writeBytes(state, [0x68, 0x69]);
-    expect(bridge['string.concat'](0, non)).toBe(non);
-    expect(bridge['string.concat'](non, 0)).toBe(non);
+    const r1 = bridge['string.concat'](0, non);
+    const r2 = bridge['string.concat'](non, 0);
+    expect(r1).not.toBe(non);
+    expect(r2).not.toBe(non);
+    expect(readLengthPrefixedString(memory, r1)).toBe('hi');
+    expect(readLengthPrefixedString(memory, r2)).toBe('hi');
     expect(bridge['string.concat'](0, 0)).toBe(0);
+  });
+
+  it('result does not alias either input — mutating an input buffer after concat must not change the result', () => {
+    // Reproduces the production WASM trap mechanism: compiler-emitted accumulator
+    // code reuses the input buffer after the concat call. If concat aliased one of
+    // the inputs into the result, the subsequent reuse would corrupt the returned
+    // buffer's length prefix and cause OOB reads on the next round of the loop.
+    const a = writeBytes(state, [0x41, 0x42]); // "AB"
+    const b = writeBytes(state, [0x43, 0x44]); // "CD"
+    const r = bridge['string.concat'](a, b);
+
+    expect(r).not.toBe(a);
+    expect(r).not.toBe(b);
+
+    // Clobber both input length prefixes — emulates the caller recycling them.
+    const view = new DataView(memory.buffer);
+    view.setUint32(a, 0xdeadbeef, true);
+    view.setUint32(b, 0xdeadbeef, true);
+
+    expect(readLengthPrefixedString(memory, r)).toBe('ABCD');
   });
 
   it('does not call TextDecoder on intermediate fragments', () => {
