@@ -1,5 +1,6 @@
 import { WasmState } from '../types';
 import { log } from './helpers';
+import { bumpHeapPtr } from '../wasm/memory';
 
 /**
  * Memory scope stack for tracking allocations
@@ -33,6 +34,15 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
      *
      * Matches clean-server/host-bridge/src/wasm_linker/memory.rs which also
      * declares `(_type_id, size)`.
+     *
+     * NSR002 (0.1.66 follow-up): bump `__heap_ptr` past the allocation before
+     * returning. The compiler emits `mem_alloc` calls for every non-string
+     * object (records, list element slots, struct/class instances). Without
+     * the defensive bump, the WASM-internal `__malloc` reads a stale
+     * `__heap_ptr` on its next call and hands out a pointer that overlaps the
+     * mem_alloc'd block, corrupting its first 4–8 bytes and producing the
+     * "memory access out of bounds" trap that survived the 7679a9e fix.
+     * Parity with clean-server's Rust `mem_alloc` (host-bridge/src/wasm_linker/memory.rs).
      */
     mem_alloc(_typeId: number, size: number): number {
       const state = getState();
@@ -43,6 +53,9 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
 
       try {
         const ptr = state.exports.malloc(size);
+        if (ptr === 0) {
+          return 0;
+        }
 
         // Track allocation in current scope
         if (scopeStack.length > 0) {
@@ -51,6 +64,12 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
 
         // Initialize reference count
         refCounts.set(ptr, 1);
+
+        // See bumpHeapPtr in wasm/memory.ts — the WASM `__malloc` doesn't
+        // always advance `__heap_ptr` before returning to the bridge, so the
+        // next allocation can overlap this one. Force the bump to break that
+        // chain (matches concatLengthPrefixed / string_split / writeString).
+        bumpHeapPtr(state.exports, ptr, size);
 
         log(state, 'MEM', `Allocated ${size} bytes at ${ptr}`);
         return ptr;
