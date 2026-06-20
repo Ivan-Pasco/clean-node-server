@@ -1,5 +1,6 @@
 import { WasmState } from '../types';
 import { readString, readPrefixedString, writeString } from './helpers';
+import { bumpHeapPtr } from '../wasm/memory';
 
 /**
  * Concatenate two length-prefixed strings at the BYTE level.
@@ -62,6 +63,10 @@ function concatLengthPrefixed(state: WasmState, lpA: number, lpB: number): numbe
   new DataView(buffer).setUint32(ptr, totalLen, true);
   if (lenA > 0) bytes.copyWithin(ptr + 4, lpA + 4, lpA + 4 + lenA);
   if (lenB > 0) bytes.copyWithin(ptr + 4 + lenA, lpB + 4, lpB + 4 + lenB);
+  // See bumpHeapPtr in wasm/memory.ts — the WASM `__malloc` doesn't always
+  // advance `__heap_ptr` before returning to the bridge, so the next
+  // allocation can overlap this one. Force the bump to break that chain.
+  bumpHeapPtr(state.exports, ptr, 4 + totalLen);
   return ptr;
 }
 
@@ -231,6 +236,11 @@ export function createStringBridge(getState: () => WasmState) {
       for (let i = 0; i < elementPtrs.length; i++) {
         view.setUint32(listPtr + HEADER_SIZE + i * ELEM_SIZE, elementPtrs[i], true);
       }
+      // See bumpHeapPtr in wasm/memory.ts. Without this, the next bridge
+      // malloc could land inside this list block, corrupting either the
+      // 16-byte header or an element pointer — and the compiler's
+      // `iterate part in parts` would then walk garbage pointers and trap.
+      bumpHeapPtr(state.exports, listPtr, listSize);
       return listPtr;
     },
 

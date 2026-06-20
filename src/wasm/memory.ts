@@ -4,6 +4,45 @@ const WASM_PAGE_BYTES = 65_536;
 const DEFAULT_PREGROW_BYTES = 16 * 1024 * 1024; // 16 MB
 
 /**
+ * Defensively bump the `__heap_ptr` exported global past a host-side allocation.
+ *
+ * The compiler's `__malloc` uses `__heap_ptr` as the bump pointer for WASM-side
+ * allocations. Re-entrant mallocs called from host bridge functions don't always
+ * advance the global by the time control returns to the bridge — the global is
+ * still at its pre-call value when the NEXT bridge function asks malloc for
+ * memory, so the next allocation overlaps the first. The overlap corrupts the
+ * first allocation's length prefix, and the next WASM read pulls a huge bogus
+ * length and traps with "memory access out of bounds".
+ *
+ * Clean-server's Rust bridge has the same guard in `write_string_to_caller`,
+ * `write_bytes_to_caller`, and `write_string_list_to_caller`
+ * (host-bridge/src/wasm_linker/helpers.rs). This function brings node-server
+ * into parity.
+ *
+ * The bump aligns to 8 bytes so any subsequent f64 allocation (e.g. from
+ * `list.push_f64`) lands aligned.
+ */
+function bumpHeapPtrPastAllocation(exports: WasmExports, ptr: number, totalSize: number): void {
+  const heapGlobal = (exports as unknown as Record<string, unknown>).__heap_ptr as
+    | WebAssembly.Global
+    | undefined;
+  if (!heapGlobal) return;
+  const expected = (ptr + totalSize + 7) & ~7;
+  const current = heapGlobal.value as number;
+  if (typeof current === 'number' && current < expected) {
+    heapGlobal.value = expected;
+  }
+}
+
+/**
+ * Internal export so other bridge helpers (concatLengthPrefixed, string_split,
+ * etc.) can apply the same defensive bump after their own malloc calls.
+ */
+export function bumpHeapPtr(exports: WasmExports, ptr: number, totalSize: number): void {
+  bumpHeapPtrPastAllocation(exports, ptr, totalSize);
+}
+
+/**
  * Read a length-prefixed string from WASM memory
  * Format: [4-byte LE length][UTF-8 bytes]
  *
@@ -99,6 +138,7 @@ export function writeLengthPrefixedString(exports: WasmExports, str: string): nu
   view.setUint32(ptr, bytes.length, true); // little-endian length prefix
   new Uint8Array(buffer).set(bytes, ptr + 4);
 
+  bumpHeapPtrPastAllocation(exports, ptr, totalSize);
   return ptr;
 }
 
@@ -119,6 +159,7 @@ export function writeRawBytes(exports: WasmExports, data: Uint8Array): number {
   const memoryArray = new Uint8Array(exports.memory.buffer);
   memoryArray.set(data, ptr);
 
+  bumpHeapPtrPastAllocation(exports, ptr, data.length);
   return ptr;
 }
 

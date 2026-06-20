@@ -14,7 +14,10 @@
       "Bash(python3 -c \"import sys,json; d=json.load\\(sys.stdin\\); print\\('latest:', d.get\\('dist-tags',{}\\).get\\('latest','?'\\), '| versions:', list\\(d.get\\('versions',{}\\).keys\\(\\)\\)[-3:]\\)\")",
       "Bash(echo '=== COMPONENT: __TRACKED_VAR__ ===')",
       "Bash(echo \"\")",
-      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=node-server&status=open')"
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=node-server&status=open')",
+      "Bash(curl -sS -o /dev/null -w \"HTTP %{http_code} | time %{time_total}s\\\\n\" https://errors.cleanlanguage.dev/)",
+      "Bash(curl -sS -o /dev/null -w \"HTTP %{http_code} | time %{time_total}s\\\\n\" https://errors.cleanlanguage.dev/api/health)",
+      "Bash(echo '=== __TRACKED_VAR__ ===')"
     ]
   }
 }
