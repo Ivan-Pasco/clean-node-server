@@ -1,16 +1,42 @@
-import { WasmState } from '../types';
+import { WasmState, WasmExports } from '../types';
 import { log } from './helpers';
 import { bumpHeapPtr } from '../wasm/memory';
 
 /**
- * Memory scope stack for tracking allocations
+ * Memory scope stack for tracking allocations.
+ *
+ * `snapshot` is the `__heap_ptr` value returned by `state.exports.scope_push()`
+ * at push time. On pop we hand it back to `state.exports.scope_pop(snapshot)`
+ * to rewind the WASM bump allocator's `__heap_ptr` global — that is what
+ * actually reclaims string buffers written via writeLengthPrefixedString /
+ * concatLengthPrefixed / etc. (none of which register with the per-allocation
+ * `allocations` array). `snapshot` is 0 when the WASM module doesn't export
+ * scope primitives (compilers < 0.30.330).
+ *
+ * `allocations` is the legacy per-`mem_alloc` tracking kept for backward
+ * compatibility with older compilers and for the few non-region allocators
+ * that genuinely want refcount semantics.
  */
 interface MemoryScope {
   allocations: number[];
+  snapshot: number;
 }
 
 let scopeStack: MemoryScope[] = [];
 let refCounts: Map<number, number> = new Map();
+
+type ScopePushFn = () => number;
+type ScopePopFn = (snapshot: number) => void;
+
+function getScopePush(exports: WasmExports): ScopePushFn | undefined {
+  const fn = (exports as unknown as Record<string, unknown>).scope_push;
+  return typeof fn === 'function' ? (fn as ScopePushFn) : undefined;
+}
+
+function getScopePop(exports: WasmExports): ScopePopFn | undefined {
+  const fn = (exports as unknown as Record<string, unknown>).scope_pop;
+  return typeof fn === 'function' ? (fn as ScopePopFn) : undefined;
+}
 
 /**
  * Create memory runtime bridge functions
@@ -115,35 +141,63 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
     },
 
     /**
-     * Push a new memory scope onto the stack
+     * Push a new memory scope onto the stack.
+     *
+     * If the WASM module exports `scope_push` (compiler ≥ 0.30.330,
+     * COMPILER-NO-FREE-EXPORT-LEAKS-WASM-MEMORY follow-up), capture the
+     * `__heap_ptr` snapshot so the matching pop can rewind the bump pointer.
+     * Older modules (no `scope_push` export) fall back to the legacy
+     * per-allocation tracking only.
      */
     mem_scope_push(): void {
-      scopeStack.push({ allocations: [] });
+      const state = getState();
+      const scopePush = getScopePush(state.exports);
+      const snapshot = scopePush ? scopePush() : 0;
+      scopeStack.push({ allocations: [], snapshot });
     },
 
     /**
-     * Pop the current memory scope and release all its allocations
+     * Pop the current memory scope and release its allocations.
+     *
+     * Two-phase reclaim:
+     *   1. Legacy per-`mem_alloc` ptrs are refcount-decremented and (if the
+     *      module exports `free`) freed individually. Pre-0.30.330 compilers
+     *      relied on this path. On 0.30.330+ `free` is a no-op stub so this
+     *      degrades to bookkeeping cleanup of the JS-side refCounts map.
+     *   2. If the module exports `scope_pop`, hand it the snapshot taken at
+     *      push time. This rewinds the WASM `__heap_ptr` global, reclaiming
+     *      every byte allocated via `__malloc` since the matching push —
+     *      including the string buffers from writeLengthPrefixedString /
+     *      concatLengthPrefixed that don't go through `mem_alloc` and that
+     *      were the actual source of the memory exhaustion in CNS-MEM-…-POP.
      */
     mem_scope_pop(): void {
       const state = getState();
       const scope = scopeStack.pop();
+      if (!scope) return;
 
-      if (scope) {
-        // Release all allocations in this scope
-        for (const ptr of scope.allocations) {
-          const count = refCounts.get(ptr) || 0;
-          if (count <= 1) {
-            if (state.exports.free) {
-              try {
-                state.exports.free(ptr);
-              } catch {
-                // Ignore errors during cleanup
-              }
+      for (const ptr of scope.allocations) {
+        const count = refCounts.get(ptr) || 0;
+        if (count <= 1) {
+          if (state.exports.free) {
+            try {
+              state.exports.free(ptr);
+            } catch {
+              // Ignore errors during cleanup
             }
-            refCounts.delete(ptr);
-          } else {
-            refCounts.set(ptr, count - 1);
           }
+          refCounts.delete(ptr);
+        } else {
+          refCounts.set(ptr, count - 1);
+        }
+      }
+
+      const scopePop = getScopePop(state.exports);
+      if (scopePop && scope.snapshot !== 0) {
+        try {
+          scopePop(scope.snapshot);
+        } catch (err) {
+          log(state, 'MEM', `scope_pop rewind failed for snapshot ${scope.snapshot}`, err);
         }
       }
     },

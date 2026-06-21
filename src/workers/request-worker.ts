@@ -125,7 +125,27 @@ parentPort.on('message', (msg: WorkerInbound) => {
     return;
   }
 
+  // Per-request scope wraps the WASM handler invocation so the bump allocator
+  // is rewound after each request. Compiler 0.30.330+ exports `scope_push`
+  // (returns saved `__heap_ptr`) and `scope_pop` (restores it). Without this,
+  // every `string.concat` / writeLengthPrefixedString / __malloc call from the
+  // handler is permanently retained — none of those go through `mem_alloc` /
+  // refcount tracking, so per-allocation reclaim cannot reach them. See
+  // CNS-MEM-SCOPE-POP-IGNORES-NEW-COMPILER-PRIMITIVE.
+  const scopePushFn = (wasmState.exports as unknown as Record<string, unknown>).scope_push as
+    | (() => number)
+    | undefined;
+  const scopePopFn = (wasmState.exports as unknown as Record<string, unknown>).scope_pop as
+    | ((snapshot: number) => void)
+    | undefined;
+  const hasScopes = typeof scopePushFn === 'function' && typeof scopePopFn === 'function';
+  let requestScopeSnapshot = 0;
+
   try {
+    if (hasScopes) {
+      requestScopeSnapshot = scopePushFn!();
+    }
+
     setRequestContext(wasmState, context);
     resetRequestState();
 
@@ -159,6 +179,12 @@ parentPort.on('message', (msg: WorkerInbound) => {
 
     const response = getResponse(wasmState);
 
+    // Response body, headers, and cookies are already materialized as JS
+    // strings/objects above; rewinding the WASM heap is safe from here on.
+    if (hasScopes) {
+      try { scopePopFn!(requestScopeSnapshot); } catch { /* trap; instance restart will handle */ }
+    }
+
     requestCount++;
     const heapGrown = readHeapPtr() - initialHeapPtr;
     const needsRestart = requestCount >= MAX_REQUEST_COUNT || heapGrown > MAX_HEAP_GROWTH_BYTES;
@@ -185,6 +211,14 @@ parentPort.on('message', (msg: WorkerInbound) => {
     // throw would otherwise grow the heap indefinitely without ever tripping
     // MAX_REQUEST_COUNT or MAX_HEAP_GROWTH_BYTES — the root cause of
     // NODESERVER_MEM_LEAK on workloads where errors are common.
+    //
+    // Rewind the per-request scope on the error path too — without this, a
+    // handler that traps mid-allocation would leak everything it allocated
+    // before the trap (string concats, response prep, etc.). scope_pop only
+    // restores the global; it doesn't depend on the WASM stack being intact.
+    if (hasScopes) {
+      try { scopePopFn!(requestScopeSnapshot); } catch { /* trap; instance restart will handle */ }
+    }
     requestCount++;
     let heapGrown = 0;
     try { heapGrown = readHeapPtr() - initialHeapPtr; } catch { /* heap unreadable post-trap */ }
