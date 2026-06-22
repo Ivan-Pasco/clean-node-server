@@ -14,6 +14,38 @@ function getNestedValue(data: unknown, path: string): unknown {
   return current;
 }
 
+function substituteTemplate(template: string, data: unknown): string {
+  let result = '';
+  let rest = template;
+  while (rest.length > 0) {
+    const open = rest.indexOf('{{');
+    if (open === -1) {
+      result += rest;
+      break;
+    }
+    result += rest.slice(0, open);
+    const afterOpen = rest.slice(open + 2);
+    const close = afterOpen.indexOf('}}');
+    if (close === -1) {
+      result += '{{' + afterOpen;
+      break;
+    }
+    const rawKey = afterOpen.slice(0, close);
+    const key = rawKey.trim();
+    if (key.length === 0 || /[{}\n\r]/.test(key)) {
+      result += '{{';
+      rest = afterOpen;
+      continue;
+    }
+    const value = getNestedValue(data, key);
+    if (value !== undefined && value !== null) {
+      result += String(value);
+    }
+    rest = afterOpen.slice(close + 2);
+  }
+  return result;
+}
+
 function evaluateCondition(condition: string, data: unknown): boolean {
   const value = getNestedValue(data, condition.trim());
   if (value === null || value === undefined) return false;
@@ -720,13 +752,18 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
-     * Render an HTML template with {key} substitution. Caller provides the
+     * Render an HTML template with `{{ key }}` substitution. Caller provides the
      * full relative path from project root (e.g. "app/ui/pages/index.html").
      * Path construction is the caller's responsibility.
      *
-     * Substitutes all {key} occurrences with the corresponding value from
-     * the JSON data string. Missing keys produce an empty string. Returns the
-     * rendered HTML as a length-prefixed string pointer, or an empty string on error.
+     * Internal whitespace inside the braces is tolerated (`{{key}}`, `{{ key }}`,
+     * `{{   key   }}` all match). Dotted paths (`{{ user.name }}`) are resolved
+     * against the JSON data. Missing keys produce an empty string. Single-brace
+     * `{key}` is left untouched — reserved for the cl-iterate directive. See
+     * HOST_BRIDGE.md `_ui_render_page` and function-registry.toml.
+     *
+     * Returns the rendered HTML as a length-prefixed string pointer, or an empty
+     * string on error.
      */
     _ui_render_page(pageNamePtr: number, pageNameLen: number, dataPtr: number, dataLen: number): number {
       const state = getState();
@@ -770,10 +807,7 @@ export function createUiBridge(getState: () => WasmState) {
         }
       }
 
-      const substituted = template.replace(/\{([\w.]+)\}/g, (_match, key) => {
-        const value = getNestedValue(data, key);
-        return value !== undefined && value !== null ? String(value) : '';
-      });
+      const substituted = substituteTemplate(template, data);
 
       const withDirectives = processDirectives(substituted, data);
 
