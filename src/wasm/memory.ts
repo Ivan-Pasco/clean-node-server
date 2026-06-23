@@ -229,3 +229,45 @@ export function preGrowMemory(
     // Module's declared max memory is below targetBytes — non-fatal.
   }
 }
+
+/**
+ * Wrap a WASM handler invocation in a per-call memory scope so any heap growth
+ * during the call (string concats, malloc-backed buffers, list payloads, etc.)
+ * is reclaimed when the call returns.
+ *
+ * Compiler ≥ 0.30.330 emits `scope_push` (returns the current `__heap_ptr`)
+ * and `scope_pop(snapshot)` (rewinds `__heap_ptr` to it). Modules compiled with
+ * older compilers don't export these — the body runs unchanged and the bump
+ * pointer accumulates, but rotation thresholds (MAX_REQUEST_COUNT,
+ * MAX_HEAP_GROWTH_BYTES) still bound total growth at the worker level.
+ *
+ * `fn` MUST materialize anything the JS host needs to read out of WASM memory
+ * (response bodies, list payloads, return values) before returning. Once
+ * scope_pop rewinds the bump pointer the WASM addresses inside the scope are
+ * reusable and reading them is unsafe.
+ *
+ * scope_pop is invoked on both the success and error paths — a handler that
+ * traps mid-allocation otherwise leaks every byte it allocated before the
+ * trap. See NSR-NO-PER-REQUEST-MEMORY-RELEASE.
+ */
+export function withWasmScope<T>(exports: WasmExports, fn: () => T): T {
+  const recordExports = exports as unknown as Record<string, unknown>;
+  const scopePush = recordExports.scope_push as (() => number) | undefined;
+  const scopePop = recordExports.scope_pop as ((snapshot: number) => void) | undefined;
+
+  if (typeof scopePush !== 'function' || typeof scopePop !== 'function') {
+    return fn();
+  }
+
+  const snapshot = scopePush();
+  try {
+    return fn();
+  } finally {
+    try {
+      scopePop(snapshot);
+    } catch {
+      // scope_pop trap leaves __heap_ptr at its post-handler position; the
+      // worker pool's heap-growth threshold rotates the instance separately.
+    }
+  }
+}

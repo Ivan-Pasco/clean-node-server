@@ -20,6 +20,7 @@
  */
 import { WasmState } from '../types';
 import { readString } from './helpers';
+import { withWasmScope } from '../wasm/memory';
 
 // ---------------------------------------------------------------------------
 // Cron expression parsing
@@ -163,7 +164,10 @@ function fireHandler(entry: ScheduleEntry): void {
     return;
   }
   try {
-    (handler as () => unknown)();
+    // Cron handlers run on the long-lived init instance, so without scope
+    // rewind every tick permanently advances the bump pointer — a once-per-
+    // minute job leaks indefinitely. See NSR-NO-PER-REQUEST-MEMORY-RELEASE.
+    withWasmScope(state.exports, () => (handler as () => unknown)());
   } catch (err) {
     logSchedule(`'${entry.name}': handler '${entry.handler}' threw`, err);
   }

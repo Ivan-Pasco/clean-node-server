@@ -5,7 +5,7 @@ import { createDatabaseDriver } from '../database';
 import { setSandboxRoot } from '../bridge/file';
 import { SyncHttpClient } from '../bridge/http-client';
 import { setRequestContext } from '../wasm/state';
-import { preGrowMemory } from '../wasm/memory';
+import { preGrowMemory, withWasmScope } from '../wasm/memory';
 import { RouteRegistry } from '../router';
 import { setRouteRegistry } from '../bridge/http-server';
 import { WasmState, DatabaseDriver, SessionStore, SessionData } from '../types';
@@ -110,7 +110,13 @@ parentPort.on('message', (msg: SseWorkerInbound) => {
       throw new Error(`SSE handler not found in WASM exports: ${handlerName}`);
     }
 
-    (handler as () => void)();
+    // Per-connection scope rewinds every byte the SSE handler allocated
+    // (sse_emit payloads, string concats, intermediate buffers) once it
+    // returns. Without this the worker's bump pointer grows by the full sum
+    // of all emitted frames and never recovers, even after the worker is
+    // terminated and re-spawned for the next connection it leaked memory
+    // during its lifetime. See NSR-NO-PER-REQUEST-MEMORY-RELEASE.
+    withWasmScope(wasmState.exports, () => (handler as () => void)());
 
     // Handler returned normally — signal the main thread to close the stream.
     parentPort!.postMessage({ type: 'sse_done' });

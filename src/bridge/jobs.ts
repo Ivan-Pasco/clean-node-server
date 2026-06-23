@@ -34,6 +34,7 @@ import * as path from 'node:path';
 import Database from 'better-sqlite3';
 import { WasmState } from '../types';
 import { readString, writeString } from './helpers';
+import { withWasmScope } from '../wasm/memory';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -449,7 +450,12 @@ function runHandler(job: JobRecord): void {
   let handlerError: Error | null = null;
   jobLocal.run(ctx, () => {
     try {
-      (handler as () => unknown)();
+      // Job handlers also run on the init instance — without scope rewind
+      // every job processed permanently advances the bump pointer. Result/
+      // status is communicated via JobLocalContext (JS-side), so it's safe to
+      // rewind WASM memory as soon as the handler returns.
+      // See NSR-NO-PER-REQUEST-MEMORY-RELEASE.
+      withWasmScope(state.exports, () => (handler as () => unknown)());
     } catch (err) {
       handlerError = err instanceof Error ? err : new Error(String(err));
     }
