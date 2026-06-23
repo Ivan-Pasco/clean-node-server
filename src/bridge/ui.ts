@@ -601,65 +601,6 @@ export function createUiClientStubs(): Record<string, () => number> {
     _ui_apply_css_vars: noop,
     _ui_current_path: noop,
     _ui_form_submit: noop,
-
-    // Dot-notation camelCase entries (compiler may generate these).
-    // snake_case aliases are generated automatically below.
-    'ui.registerComponent': noop,
-    'ui.getComponent': noop,
-    'ui.setSlot': noop,
-    'ui.getSlot': noop,
-    'ui.onEvent': noop,
-    'ui.setState': noop,
-    'ui.getState': noop,
-    'ui.updateElement': noop,
-    'ui.updateAttr': noop,
-    'ui.updateElementSelf': noop,
-    'ui.getText': noop,
-    'ui.getAttr': noop,
-    'ui.toggleClass': noop,
-    'ui.addClass': noop,
-    'ui.removeClass': noop,
-    'ui.setStyle': noop,
-    'ui.querySetStyle': noop,
-    'ui.querySetAttr': noop,
-    'ui.queryAddClass': noop,
-    'ui.queryRemoveClass': noop,
-    'ui.filterByAttr': noop,
-    'ui.filterByText': noop,
-    'ui.bindInput': noop,
-    'ui.inputValue': noop,
-    'ui.formJson': noop,
-    'ui.formData': noop,
-    'ui.setInput': noop,
-    'ui.eventAttr': noop,
-    'ui.eventValue': noop,
-    'ui.eventClosestAttr': noop,
-    'ui.eventType': noop,
-    'ui.clipboardWrite': noop,
-    'ui.locationHref': noop,
-    'ui.locationQuery': noop,
-    'ui.locationPath': noop,
-    'ui.observeVisible': noop,
-    'ui.setTimeout': noop,
-
-    // DOM query dot-notation (§FEXT-2)
-    'ui.getBounds': noop,
-    'ui.getOffsetBounds': noop,
-    'ui.getScroll': noop,
-    'ui.setScroll': noop,
-    'ui.queryAll': noop,
-    'ui.getComputedStyle': noop,
-
-    // iframe communication dot-notation (§FEXT-3)
-    'ui.iframeSend': noop,
-    'ui.iframeOnMessage': noop,
-    'ui.iframeGetBounds': noop,
-    'ui.iframeInject': noop,
-
-    // Drag data dot-notation (§FEXT-1)
-    'ui.setDragData': noop,
-    'ui.getDragData': noop,
-    'ui.eventDataJson': noop,
   };
 
   return stubs;

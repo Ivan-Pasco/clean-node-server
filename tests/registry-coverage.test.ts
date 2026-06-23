@@ -26,6 +26,7 @@ interface RegistryEntry {
   name: string;
   aliases: string[];
   module: string;
+  hosts: string[];
 }
 
 function parseRegistry(toml: string): RegistryEntry[] {
@@ -35,14 +36,38 @@ function parseRegistry(toml: string): RegistryEntry[] {
     const nameMatch = block.match(/^name\s*=\s*"([^"]+)"/m);
     const aliasesMatch = block.match(/^aliases\s*=\s*\[([^\]]*)\]/ms);
     const moduleMatch = block.match(/^module\s*=\s*"([^"]+)"/m);
+    const hostsMatch = block.match(/^hosts\s*=\s*\[([^\]]*)\]/ms);
     if (!nameMatch) continue;
     const aliases = aliasesMatch
       ? [...aliasesMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
       : [];
     const module = moduleMatch ? moduleMatch[1] : 'env';
-    entries.push({ name: nameMatch[1], aliases, module });
+    const hosts = hostsMatch
+      ? [...hostsMatch[1].matchAll(/"([^"]+)"/g)].map((m) => m[1])
+      : [];
+    entries.push({ name: nameMatch[1], aliases, module, hosts });
   }
   return entries;
+}
+
+/**
+ * True if the registry says this entry must be implemented by clean-node-server.
+ *
+ * Entries with `hosts = ["all"]` apply to every host. Entries with `hosts =
+ * ["server"]` apply to both clean-server (Rust) and clean-node-server (this
+ * project) — apps don't choose between server implementations when calling a
+ * bridge function. Entries with `hosts = ["browser"]` (or other restricted
+ * lists not including server) must NOT be checked against the node-server
+ * bridge — they're implemented in the browser runtime JS shipped with the
+ * framework plugins, not here. Entries with no `hosts` field are unenforced
+ * and skipped to avoid false positives on legacy registry rows.
+ *
+ * See foundation/platform-architecture/function-registry.toml and
+ * foundation/management/scripts/check_host_parity.py for the canonical rule.
+ */
+function requiredForNodeServer(hosts: string[]): boolean {
+  if (hosts.length === 0) return false;
+  return hosts.includes('all') || hosts.includes('server') || hosts.includes('node-server');
 }
 
 // ─── Mock State ───────────────────────────────────────────────────────────────
@@ -90,14 +115,19 @@ describe('Bridge registry coverage', () => {
     expect(typeof env).toBe('object');
   });
 
-  it('every canonical name in the registry is registered', () => {
+  it('every canonical name the registry requires of node-server is registered', () => {
     const missing: string[] = [];
     for (const entry of entries) {
       // memory_runtime module functions live in a separate WASM module; skip them
       if (entry.module !== 'env') continue;
-      if (!(entry.name in env)) {
-        missing.push(entry.name);
-      }
+      // Browser-only / unenforced entries are not this host's responsibility.
+      if (!requiredForNodeServer(entry.hosts)) continue;
+      // An alias registration satisfies the coverage check — the bridge only
+      // needs one binding under any of the declared names for WASM imports to
+      // resolve. Mirrors check_host_parity.py's MISSING rule.
+      if (entry.name in env) continue;
+      if (entry.aliases.some((a) => a in env)) continue;
+      missing.push(entry.name);
     }
     expect(missing, `Missing canonical registrations: ${missing.join(', ')}`).toHaveLength(0);
   });
