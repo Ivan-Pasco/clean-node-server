@@ -1,6 +1,6 @@
 import { workerData, parentPort } from 'worker_threads';
 import { WasmLoader } from '../wasm/instance';
-import { createBridgeImports } from '../bridge';
+import { createBridgeImports, resetPerRequestBridgeState } from '../bridge';
 import { BrokerSessionStore } from '../session/broker-store';
 import { createDatabaseDriver } from '../database';
 import { setSandboxRoot } from '../bridge/file';
@@ -184,6 +184,12 @@ parentPort.on('message', (msg: WorkerInbound) => {
     if (hasScopes) {
       try { scopePopFn!(requestScopeSnapshot); } catch { /* trap; instance restart will handle */ }
     }
+    // Release JS-side bridge accumulators (listStore, arrayStore, refCounts).
+    // scope_pop only rewinds WASM linear memory; without this every handler
+    // that touches a list/array (directly, or transitively via plugin code)
+    // leaks its JS handles for the worker's lifetime — the residual RSS
+    // growth reported in NSR-HTTP-SCOPE-WRAP-INCOMPLETE.
+    resetPerRequestBridgeState();
 
     requestCount++;
     const heapGrown = readHeapPtr() - initialHeapPtr;
@@ -219,6 +225,11 @@ parentPort.on('message', (msg: WorkerInbound) => {
     if (hasScopes) {
       try { scopePopFn!(requestScopeSnapshot); } catch { /* trap; instance restart will handle */ }
     }
+    // Same JS-side bridge cleanup as the success path — see comment above.
+    // Critical on the error path too: a partially-completed handler may have
+    // populated listStore/arrayStore with handles to lists that the throw
+    // prevented from being released.
+    try { resetPerRequestBridgeState(); } catch { /* defensive — never block error reporting */ }
     requestCount++;
     let heapGrown = 0;
     try { heapGrown = readHeapPtr() - initialHeapPtr; } catch { /* heap unreadable post-trap */ }

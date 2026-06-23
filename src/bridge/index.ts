@@ -29,6 +29,32 @@ import { createJobsBridge } from './jobs';
 import { createWebsocketBridge } from './websocket';
 import { createScheduleBridge } from './schedule';
 import { readString, writeString } from './helpers';
+import { resetMemoryRuntime } from './memory-runtime';
+import { resetListStore } from './list';
+import { resetArrayStore } from './array';
+
+/**
+ * Release JS-side bridge accumulators between requests on the same WASM
+ * instance. scope_pop rewinds the WASM bump heap, but several bridges keep
+ * their own module-level Maps (handle → JS array, ptr → refcount, etc.) that
+ * accumulate across requests until the worker is recycled. Calling this after
+ * each request brings JS-heap parity with the WASM heap rewind.
+ *
+ * Spec: NSR-HTTP-SCOPE-WRAP-INCOMPLETE — per-request RSS growth on
+ * clean-node-server ≥ 0.1.70 even with scope_push/scope_pop correctly wired.
+ * The HTTP scope wrap reclaims WASM linear memory but not the JS-side handle
+ * tables — those grow ~hundreds of KB per request for any handler that
+ * touches lists/arrays (directly, or transitively via plugin code).
+ *
+ * Safe to call from anywhere a request boundary completes: the WASM heap has
+ * already been rewound by scope_pop, so any handle a caller might have held
+ * pointed into now-reclaimed WASM memory and is invalid regardless.
+ */
+export function resetPerRequestBridgeState(): void {
+  resetMemoryRuntime();
+  resetListStore();
+  resetArrayStore();
+}
 
 /**
  * Create all bridge imports for WASM instantiation
