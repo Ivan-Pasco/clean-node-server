@@ -163,6 +163,19 @@ export function createMcpBridge(getState: () => WasmState) {
       return writeString(state, requestBody);
     },
 
+    _mcp_http_respond(msgPtr: number, msgLen: number): number {
+      const state = getState();
+      const mcp = getMcpState(state);
+      const msg = readString(state, msgPtr, msgLen);
+
+      if (!mcp.httpWorker || !mcp.lastRequestId) {
+        return 0;
+      }
+      mcp.httpWorker.postMessage({ type: 'respond', requestId: mcp.lastRequestId, body: msg });
+      mcp.lastRequestId = undefined;
+      return 1;
+    },
+
     _mcp_sse_send(clientIdPtr: number, clientIdLen: number, eventPtr: number, eventLen: number): number {
       const state = getState();
       const mcp = getMcpState(state);

@@ -185,6 +185,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       float_to_string: stringBridge.float_to_string,
       string_to_float: stringBridge.string_to_float,
       int_to_string: stringBridge.int_to_string,
+      int64_to_string: stringBridge.int64_to_string,
       string_to_int: stringBridge.string_to_int,
       bool_to_string: stringBridge.bool_to_string,
       string_to_bool: stringBridge.string_to_bool,
@@ -305,6 +306,13 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // HTTP server functions
       _http_route: httpServerBridge._http_route,
       _http_listen: httpServerBridge._http_listen,
+      // Bridge-driven server config (FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED
+      // pre-implementation; tracked here as NODE-SERVER-CONFIG-BRIDGES-MISSING).
+      // Signatures may need adjustment once the upstream framework PR lands.
+      _http_listen_on: httpServerBridge._http_listen_on,
+      _cors_configure: httpServerBridge._cors_configure,
+      _rate_limit_configure: httpServerBridge._rate_limit_configure,
+      _http_set_global_error_handler: httpServerBridge._http_set_global_error_handler,
       _http_route_protected: httpServerBridge._http_route_protected,
       _http_set_status: httpServerBridge._http_set_status,
       _http_set_header: httpServerBridge._http_set_header,
@@ -464,6 +472,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _mcp_stdio_write: mcpBridge._mcp_stdio_write,
       _mcp_http_serve: mcpBridge._mcp_http_serve,
       _mcp_http_accept: mcpBridge._mcp_http_accept,
+      _mcp_http_respond: mcpBridge._mcp_http_respond,
       _mcp_sse_send: mcpBridge._mcp_sse_send,
       _mcp_log: mcpBridge._mcp_log,
 
@@ -515,7 +524,16 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
 export { createConsoleBridge } from './console';
 export { createMathBridge } from './math';
 export { createStringBridge } from './string';
-export { createHttpServerBridge, setRouteRegistry, getRouteRegistry } from './http-server';
+export {
+  createHttpServerBridge,
+  setRouteRegistry,
+  getRouteRegistry,
+  getConfiguredHost,
+  getCorsBridgeConfig,
+  getRateLimitBridgeConfig,
+  getGlobalErrorHandlerName,
+  resetServerConfigBridges,
+} from './http-server';
 export { createRequestBridge } from './request';
 export { createSessionBridge } from './session';
 export { createAuthBridge, getRegisteredRoles, resetRegisteredRoles } from './auth';

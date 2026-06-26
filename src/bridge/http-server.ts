@@ -20,6 +20,25 @@ function sanitizeHeaderValue(value: string): string {
  */
 let sharedRouteRegistry: RouteRegistry | null = null;
 let configuredPort: number = 3000;
+let configuredHost: string | null = null;
+
+export interface CorsBridgeConfig {
+  allowedOrigins: string[];
+  allowedMethods: string[];
+  allowedHeaders: string[];
+  maxAge: number;
+  allowCredentials: boolean;
+}
+let corsBridgeConfig: CorsBridgeConfig | null = null;
+
+export interface RateLimitBridgeConfig {
+  perWindow: number;
+  windowSeconds: number;
+  keyStrategy: 'ip' | 'user';
+}
+let rateLimitBridgeConfig: RateLimitBridgeConfig | null = null;
+
+let globalErrorHandlerName: string | null = null;
 
 /**
  * Set the shared route registry
@@ -45,6 +64,41 @@ export function getConfiguredPort(): number {
   return configuredPort;
 }
 
+// Pre-implementation of bridges paired with upstream bug
+// FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED. Signatures follow the suggested
+// fix in that report and may need adjustment if the framework PR picks
+// different ones. Tracked here as NODE-SERVER-CONFIG-BRIDGES-MISSING.
+export function getConfiguredHost(): string | null {
+  return configuredHost;
+}
+
+export function getCorsBridgeConfig(): CorsBridgeConfig | null {
+  return corsBridgeConfig;
+}
+
+export function getRateLimitBridgeConfig(): RateLimitBridgeConfig | null {
+  return rateLimitBridgeConfig;
+}
+
+export function getGlobalErrorHandlerName(): string | null {
+  return globalErrorHandlerName;
+}
+
+// Test/teardown helper — fresh server instances must not inherit stale config.
+export function resetServerConfigBridges(): void {
+  configuredHost = null;
+  corsBridgeConfig = null;
+  rateLimitBridgeConfig = null;
+  globalErrorHandlerName = null;
+}
+
+function splitCsv(value: string): string[] {
+  return value
+    .split(',')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
 /**
  * Create HTTP server bridge functions
  */
@@ -57,6 +111,88 @@ export function createHttpServerBridge(getState: () => WasmState) {
       const state = getState();
       configuredPort = port;
       log(state, 'HTTP', `Port configured: ${port}`);
+    },
+
+    /**
+     * Set host + port to listen on. Pre-implementation paired with upstream
+     * FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED — signature is the suggested
+     * `_http_listen_on(host: string, port: i32)` from that report. server.ts
+     * reads getConfiguredHost() at listen() time.
+     */
+    _http_listen_on(hostPtr: number, hostLen: number, port: number): void {
+      const state = getState();
+      const host = hostLen > 0 ? readString(state, hostPtr, hostLen) : '';
+      configuredHost = host.length > 0 ? host : null;
+      configuredPort = port;
+      log(state, 'HTTP', `Listener configured: ${configuredHost ?? '<default>'}:${port}`);
+    },
+
+    /**
+     * Configure CORS. server.ts installs the cors middleware from this config
+     * after WASM start() runs. Pre-implementation paired with upstream
+     * FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED — origins/methods/headers are
+     * comma-separated strings, allowCredentials is a WASM bool (i32 0/1).
+     */
+    _cors_configure(
+      originsPtr: number,
+      originsLen: number,
+      methodsPtr: number,
+      methodsLen: number,
+      headersPtr: number,
+      headersLen: number,
+      maxAge: number,
+      allowCredentials: number
+    ): void {
+      const state = getState();
+      const originsStr = originsLen > 0 ? readString(state, originsPtr, originsLen) : '';
+      const methodsStr = methodsLen > 0 ? readString(state, methodsPtr, methodsLen) : '';
+      const headersStr = headersLen > 0 ? readString(state, headersPtr, headersLen) : '';
+      corsBridgeConfig = {
+        allowedOrigins: splitCsv(originsStr),
+        allowedMethods: splitCsv(methodsStr),
+        allowedHeaders: splitCsv(headersStr),
+        maxAge: Math.max(0, maxAge | 0),
+        allowCredentials: allowCredentials !== 0,
+      };
+      log(state, 'HTTP', `CORS configured: origins=[${corsBridgeConfig.allowedOrigins.join(',')}] methods=[${corsBridgeConfig.allowedMethods.join(',')}] credentials=${corsBridgeConfig.allowCredentials}`);
+    },
+
+    /**
+     * Configure rate limit. server.ts installs express-rate-limit from this
+     * config after WASM start() runs. strategy is "ip" (default) or "user"
+     * (key by session_id cookie). Pre-implementation paired with upstream
+     * FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED.
+     */
+    _rate_limit_configure(
+      perWindow: number,
+      windowSeconds: number,
+      strategyPtr: number,
+      strategyLen: number
+    ): void {
+      const state = getState();
+      const strategyStr = strategyLen > 0 ? readString(state, strategyPtr, strategyLen).toLowerCase() : '';
+      const keyStrategy: 'ip' | 'user' = strategyStr === 'user' ? 'user' : 'ip';
+      rateLimitBridgeConfig = {
+        perWindow: Math.max(0, perWindow | 0),
+        windowSeconds: Math.max(1, windowSeconds | 0),
+        keyStrategy,
+      };
+      log(state, 'HTTP', `Rate limit configured: ${rateLimitBridgeConfig.perWindow} per ${rateLimitBridgeConfig.windowSeconds}s by ${keyStrategy}`);
+    },
+
+    /**
+     * Register the global error handler. server.ts dispatches to this
+     * WASM export name when a request handler throws or rejects, instead of
+     * the default 500 envelope. Pre-implementation paired with upstream
+     * FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED — handler receives the same
+     * request context the original handler did; the framework can expose the
+     * caught error via a separate _req_error bridge if needed later.
+     */
+    _http_set_global_error_handler(namePtr: number, nameLen: number): void {
+      const state = getState();
+      const name = nameLen > 0 ? readString(state, namePtr, nameLen) : '';
+      globalErrorHandlerName = name.length > 0 ? name : null;
+      log(state, 'HTTP', `Global error handler: ${globalErrorHandlerName ?? '<none>'}`);
     },
 
     /**

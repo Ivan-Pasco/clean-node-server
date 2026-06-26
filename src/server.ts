@@ -24,7 +24,15 @@ import { WasmLoader } from './wasm/instance';
 import { setRequestContext, getResponse } from './wasm/state';
 import { RouteRegistry, parseUrl } from './router';
 import { createBridgeImports } from './bridge';
-import { getRouteRegistry, setRouteRegistry, getConfiguredPort } from './bridge/http-server';
+import {
+  getRouteRegistry,
+  setRouteRegistry,
+  getConfiguredPort,
+  getConfiguredHost,
+  getCorsBridgeConfig,
+  getRateLimitBridgeConfig,
+  getGlobalErrorHandlerName,
+} from './bridge/http-server';
 import { startScheduler, stopScheduler } from './bridge/schedule';
 import { startJobWorker, stopJobWorker } from './bridge/jobs';
 import { attachWebsocketServer, stopWebsocketServer } from './bridge/websocket';
@@ -138,6 +146,51 @@ export class CleanNodeServer {
     });
   }
 
+  /**
+   * Install middleware driven by bridge calls made during WASM start().
+   * Called after WASM start() runs but before the catch-all route is
+   * registered, so the new middleware participates in request handling.
+   *
+   * Pre-implementation paired with FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED
+   * (parent) and NODE-SERVER-CONFIG-BRIDGES-MISSING (this component).
+   */
+  private applyBridgeMiddleware(): void {
+    const log = getLogger();
+
+    const corsConfig = getCorsBridgeConfig();
+    if (corsConfig && corsConfig.allowedOrigins.length > 0) {
+      this.app.use(cors({
+        origin: corsConfig.allowedOrigins.length === 1 && corsConfig.allowedOrigins[0] === '*'
+          ? '*'
+          : corsConfig.allowedOrigins,
+        methods: corsConfig.allowedMethods.length > 0 ? corsConfig.allowedMethods : undefined,
+        allowedHeaders: corsConfig.allowedHeaders.length > 0 ? corsConfig.allowedHeaders : undefined,
+        maxAge: corsConfig.maxAge > 0 ? corsConfig.maxAge : undefined,
+        credentials: corsConfig.allowCredentials,
+      }));
+      log.info({ corsConfig }, 'CORS configured via WASM bridge');
+    }
+
+    const rlConfig = getRateLimitBridgeConfig();
+    if (rlConfig && rlConfig.perWindow > 0) {
+      this.app.use(rateLimit({
+        windowMs: rlConfig.windowSeconds * 1000,
+        max: rlConfig.perWindow,
+        standardHeaders: true,
+        legacyHeaders: false,
+        keyGenerator: rlConfig.keyStrategy === 'user'
+          ? (req: Request): string => (req.cookies?.session_id as string | undefined) ?? req.ip ?? 'anon'
+          : undefined,
+      }));
+      log.info({ rlConfig }, 'Rate limit configured via WASM bridge');
+    }
+
+    const handlerName = getGlobalErrorHandlerName();
+    if (handlerName) {
+      log.info({ handlerName }, 'Global error handler registered via WASM bridge');
+    }
+  }
+
   async initialize(): Promise<void> {
     const log = createLogger(this.config.verbose);
 
@@ -161,6 +214,12 @@ export class CleanNodeServer {
     // worker reads the same init instance for handler dispatch.
     startScheduler(initState);
     startJobWorker(initState);
+
+    // Bridge-driven server config (FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED
+    // pre-implementation): apply CORS / rate-limit middleware now that
+    // WASM start() has had a chance to call _cors_configure /
+    // _rate_limit_configure. These run before the catch-all route below.
+    this.applyBridgeMiddleware();
 
     if (this.config.verbose) {
       log.info({ routes: this.routeRegistry.getRoutes().length }, 'Routes registered');
@@ -362,6 +421,28 @@ export class CleanNodeServer {
       const isOverload = msg.includes('queue full');
       const status = isTimeout || isOverload ? 503 : 500;
 
+      // Bridge-driven global error handler (FRAME-SERVER-CONFIG-FIELDS-UNIMPLEMENTED
+      // pre-implementation). Timeouts/overload are infrastructure failures and
+      // skip the handler — the WASM handler can't help if the pool is gone.
+      const handlerName = getGlobalErrorHandlerName();
+      if (handlerName && !isTimeout && !isOverload && this.requestPool) {
+        try {
+          const fallbackResult = await this.requestPool.dispatch(context, handlerName);
+          for (const cookie of fallbackResult.cookies) {
+            res.cookie(cookie.name, cookie.value, (cookie.options ?? {}) as Record<string, unknown>);
+          }
+          for (const [name, value] of Object.entries(fallbackResult.headers)) {
+            if (name.toLowerCase() === 'content-type') res.type(value);
+            else res.setHeader(name, value);
+          }
+          res.status(fallbackResult.status).send(fallbackResult.body);
+          httpRequestsTotal.inc({ method: req.method, route: routeLabel, status_code: fallbackResult.status });
+          return;
+        } catch {
+          // Fall through to the default error envelope below.
+        }
+      }
+
       res.status(status).json({
         ok: false,
         err: { code: isTimeout ? 'TIMEOUT' : isOverload ? 'OVERLOADED' : 'INTERNAL_ERROR', message: msg },
@@ -508,7 +589,9 @@ export class CleanNodeServer {
 
   start(port?: number): Promise<void> {
     const listenPort = port || getConfiguredPort() || this.config.port;
-    const host = this.config.host;
+    // Bridge-driven host (via _http_listen_on) takes precedence over the
+    // construct-time config — same precedence model as port.
+    const host = getConfiguredHost() ?? this.config.host;
 
     return new Promise((resolve, reject) => {
       if (this.config.tlsCert && this.config.tlsKey) {

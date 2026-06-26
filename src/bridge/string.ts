@@ -435,6 +435,16 @@ export function createStringBridge(getState: () => WasmState) {
     },
 
     /**
+     * Convert 64-bit integer to string.
+     * WASM i64 surfaces as a JS bigint in Node — String(bigint) preserves the
+     * full 64-bit value (unlike Number, which would lose precision past 2^53).
+     */
+    int64_to_string(value: bigint): number {
+      const state = getState();
+      return writeString(state, String(value));
+    },
+
+    /**
      * Convert float to string
      */
     float_to_string(value: number): number {
