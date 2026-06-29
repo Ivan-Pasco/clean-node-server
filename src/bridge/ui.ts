@@ -792,29 +792,6 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
-     * Accumulate a CSS string for injection into the response <head>.
-     *
-     * Multiple calls concatenate the CSS strings in order.  The server's
-     * response builder checks state.injectedCss before sending HTML responses
-     * and injects a <style> block before </head>.
-     *
-     * Returns 1 on success.
-     */
-    _ui_inject_head_css(cssPtr: number, cssLen: number): number {
-      const state = getState();
-      const css = readString(state, cssPtr, cssLen);
-
-      if (!state.injectedCss) {
-        state.injectedCss = [];
-      }
-
-      state.injectedCss.push(css);
-      log(state, 'UI', `Injected CSS (${css.length} bytes)`);
-
-      return 1;
-    },
-
-    /**
      * Inject a <link rel="stylesheet" href="..."> into the response <head>.
      *
      * Deduplicated by href — calling multiple times with the same href produces

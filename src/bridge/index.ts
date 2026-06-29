@@ -453,7 +453,6 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _ui_load_layout: uiBridge._ui_load_layout,
       _ui_load_page: uiBridge._ui_load_page,
       _ui_render_page: uiBridge._ui_render_page,
-      _ui_inject_head_css: uiBridge._ui_inject_head_css,
       _ui_inject_head_link: uiBridge._ui_inject_head_link,
       _ui_register_component_html: uiBridge._ui_register_component_html,
 

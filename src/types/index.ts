@@ -207,7 +207,6 @@ export interface WasmState {
   // can't be served from the underlying connection (FRAME-DATA-LAST-INSERT-ID-ZERO).
   // The bridge serves SELECT LAST_INSERT_ID() / LAST_INSERT_ROWID() from this slot.
   lastInsertId: number | null;
-  injectedCss?: string[];
   injectedLinks?: string[];
   projectRoot?: string;
   componentRegistry?: Map<string, string>;

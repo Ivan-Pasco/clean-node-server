@@ -66,8 +66,6 @@ export function createTestBridge(getState: () => WasmState) {
         cookieJar: new Map(),
         lastResponse: null,
       };
-      state.injectedCss = undefined;
-
       const handlerName = match.route.handlerName;
       const handler = state.exports[handlerName];
       if (typeof handler !== 'function') return -1;

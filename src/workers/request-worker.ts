@@ -64,7 +64,6 @@ function resetRequestState(): void {
     cookieJar: new Map(),
     lastResponse: null,
   };
-  wasmState.injectedCss = undefined;
 }
 
 async function initialize(): Promise<void> {
@@ -170,11 +169,6 @@ parentPort.on('message', (msg: WorkerInbound) => {
         body.trimStart().startsWith('<HTML'))
     ) {
       wasmState.response.headers['Content-Type'] = 'text/html; charset=utf-8';
-    }
-
-    if (wasmState.injectedCss?.length && wasmState.response.headers['Content-Type']?.includes('text/html')) {
-      const cssBlock = `<style>${wasmState.injectedCss.join('\n')}</style>`;
-      wasmState.response.body = wasmState.response.body.replace('</head>', `${cssBlock}\n</head>`);
     }
 
     const response = getResponse(wasmState);

@@ -111,7 +111,6 @@ export class WasmInstancePool {
       cookieJar: new Map(),
       lastResponse: null,
     };
-    state.injectedCss = undefined;
   }
 
   private readHeapPtr(state: WasmState): number {
