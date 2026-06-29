@@ -51,6 +51,12 @@ import {
   workerPoolQueued,
   workerPoolTotal,
 } from './telemetry/metrics';
+import {
+  loadAlongside as loadBuildManifest,
+  resolveArtifacts as resolveManifestArtifacts,
+  ArtifactPurpose,
+  ResolvedArtifact,
+} from './build-manifest';
 
 const DEFAULT_POOL_SIZE = Number(process.env.WASM_POOL_SIZE ?? '4');
 
@@ -256,13 +262,50 @@ export class CleanNodeServer {
       res.status(200).send(loaderJs);
     });
 
-    // Frame.ui client hydration WASM. Look next to the main WASM first (where
-    // cln build emits it), then fall back to CWD and ./public for compatibility.
-    const frontendWasmPath = resolveFrontendWasmPath(this.loader.getPath());
+    // Plugin Contracts v2 — Build manifest (artifacts.md §5, §8).
+    // Manifest-first artifact discovery: when build-manifest.json is present
+    // next to the WASM, it is the authoritative source for artifact paths.
+    // When absent (older compiler / Phase B compatibility), fall back to the
+    // legacy CWD + public/ probe.
+    const manifestResolved = this.loadAndResolveBuildManifest();
+    const manifestFrontendPath = manifestResolved.find(
+      (a) => a.purpose === ArtifactPurpose.CLIENT_HYDRATION,
+    )?.absolutePath;
+    const heuristicFrontendPath = manifestFrontendPath
+      ? undefined
+      : resolveFrontendWasmPath(this.loader.getPath());
+
     this.app.get('/frontend.wasm', (_req: Request, res: Response) => {
-      const resolved = frontendWasmPath ?? findFrontendWasmFallback();
+      // When the manifest declares the artifact, it is authoritative. A missing
+      // file is a hard 404 — no falling back to ambient directories, per
+      // contracts/artifacts.md §5.
+      if (manifestFrontendPath) {
+        try {
+          const bytes = fs.readFileSync(manifestFrontendPath);
+          res.setHeader('Content-Type', 'application/wasm');
+          res.setHeader('Cache-Control', 'public, max-age=60');
+          res.removeHeader('Pragma');
+          res.removeHeader('Expires');
+          res.status(200).send(bytes);
+        } catch (err) {
+          getLogger().error(
+            { manifestFrontendPath, err: (err as Error).message },
+            'Manifest-declared frontend.wasm missing',
+          );
+          res
+            .status(404)
+            .set('Content-Type', 'text/plain')
+            .send(
+              `frontend.wasm declared in build-manifest.json but not found at ${manifestFrontendPath}`,
+            );
+        }
+        return;
+      }
+      // Phase B fallback: no manifest entry — probe legacy locations.
+      const resolved = heuristicFrontendPath ?? findFrontendWasmFallback();
       if (!resolved) {
-        res.status(404)
+        res
+          .status(404)
           .set('Content-Type', 'text/plain')
           .send('frontend.wasm not found — compile client components to generate it');
         return;
@@ -275,11 +318,19 @@ export class CleanNodeServer {
         res.removeHeader('Expires');
         res.status(200).send(bytes);
       } catch (err) {
-        res.status(404)
+        res
+          .status(404)
           .set('Content-Type', 'text/plain')
           .send(`frontend.wasm read failed: ${(err as Error).message}`);
       }
     });
+
+    // Register routes for every other public artifact the manifest declared —
+    // chiefly static assets like `theme.css` from frame.ui (artifacts.md §4.2).
+    // `frontend.wasm` and `loader.js` already have dedicated handlers above; the
+    // manifest entry for `frontend.wasm` is consumed by the dedicated route, not
+    // duplicated as a fallback.
+    this.registerManifestArtifactRoutes(manifestResolved);
 
     // Prometheus metrics endpoint.
     this.app.get('/metrics', async (_req: Request, res: Response) => {
@@ -625,6 +676,104 @@ export class CleanNodeServer {
       });
       this.httpServer.on('error', reject);
     });
+  }
+
+  /**
+   * Load `build-manifest.json` next to the main WASM and resolve every entry's
+   * absolute path. Returns `[]` when the manifest is absent, unparseable, or
+   * empty — the caller falls back to legacy heuristics in that case.
+   *
+   * Plugin Contracts v2 — artifacts.md §5/§8.
+   */
+  private loadAndResolveBuildManifest(): ResolvedArtifact[] {
+    const log = getLogger();
+    const wasmPath = this.loader.getPath();
+    const result = loadBuildManifest(wasmPath);
+    if (result.parseError) {
+      log.warn(
+        { manifestPath: result.parseError.manifestPath, reason: result.parseError.reason },
+        'Build manifest present but unreadable; falling back to legacy artifact lookup',
+      );
+      return [];
+    }
+    if (!result.manifest) {
+      log.debug({ wasmPath }, 'No build-manifest.json next to WASM; using legacy artifact discovery');
+      return [];
+    }
+    const mainWasmDir = path.dirname(wasmPath) || '.';
+    const resolved = resolveManifestArtifacts(result.manifest, mainWasmDir);
+    log.info(
+      {
+        compilerVersion: result.manifest.compiler_version,
+        artifactCount: resolved.length,
+        callbackCount: result.manifest.callbacks.length,
+      },
+      'Loaded build manifest',
+    );
+    // Warn (but do not refuse to start) on declared artifacts whose file is
+    // missing on disk. Matches contracts/artifacts.md §8 and the Rust host's
+    // "log a startup warning" path.
+    for (const artifact of resolved) {
+      if (!fs.existsSync(artifact.absolutePath)) {
+        log.warn(
+          { name: artifact.name, path: artifact.absolutePath, purpose: artifact.purpose },
+          'Manifest-declared artifact file missing on disk',
+        );
+      }
+    }
+    return resolved;
+  }
+
+  /**
+   * Register HTTP routes for every public artifact the manifest declared,
+   * skipping the ones with dedicated handlers (`frontend.wasm`, `loader.js`).
+   * Unknown purposes are skipped with a warning.
+   *
+   * Plugin Contracts v2 — artifacts.md §8.2.
+   */
+  private registerManifestArtifactRoutes(resolved: ResolvedArtifact[]): void {
+    const RESERVED = new Set(['frontend.wasm', 'loader.js']);
+    const log = getLogger();
+    for (const artifact of resolved) {
+      if (!artifact.public) continue;
+      if (RESERVED.has(artifact.name)) continue;
+      switch (artifact.purpose) {
+        case ArtifactPurpose.CLIENT_HYDRATION:
+        case ArtifactPurpose.STATIC_ASSET:
+          break;
+        case ArtifactPurpose.MANIFEST:
+        case ArtifactPurpose.DATA_MIGRATION:
+          // These purposes are runtime-internal; not served as HTTP routes.
+          continue;
+        default:
+          log.warn(
+            { name: artifact.name, purpose: artifact.purpose },
+            'Skipping artifact route: unknown purpose',
+          );
+          continue;
+      }
+      const routePath = `/${artifact.name}`;
+      const absolutePath = artifact.absolutePath;
+      const contentType = artifact.contentType;
+      log.info({ routePath, absolutePath, contentType }, 'Manifest artifact route registered');
+      this.app.get(routePath, (_req: Request, res: Response) => {
+        try {
+          const bytes = fs.readFileSync(absolutePath);
+          res.setHeader('Content-Type', contentType);
+          res.setHeader('Cache-Control', 'public, max-age=60');
+          res.removeHeader('Pragma');
+          res.removeHeader('Expires');
+          res.status(200).send(bytes);
+        } catch (err) {
+          res
+            .status(404)
+            .set('Content-Type', 'text/plain')
+            .send(
+              `${artifact.name} declared in build-manifest.json but read failed: ${(err as Error).message}`,
+            );
+        }
+      });
+    }
   }
 
   getApp(): express.Application {
