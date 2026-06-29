@@ -10,6 +10,7 @@ import {
   MemoryStats,
   SyncHttpWorker,
 } from '../types';
+import { LocaleState } from '../locale';
 
 /**
  * Default response state
@@ -139,6 +140,7 @@ export function createWasmState(
     routeRegistry,
     database,
     lastInsertId: null,
+    locale: new LocaleState('en'),
     memoryStats,
     httpClient: {
       timeout: 30000,

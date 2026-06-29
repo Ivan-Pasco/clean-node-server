@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import type { LocaleState } from '../locale';
 
 /**
  * WASM module exports expected by the host bridge
@@ -208,6 +209,14 @@ export interface WasmState {
   // The bridge serves SELECT LAST_INSERT_ID() / LAST_INSERT_ROWID() from this slot.
   lastInsertId: number | null;
   injectedLinks?: string[];
+  /**
+   * frame.locale runtime state for this instance. The bridge functions
+   * (`_i18n_load`, `_i18n_t`, etc.) read and write through this. One state
+   * per WASM instance is equivalent to the Rust host's `tokio::task_local!`
+   * LOCALE cell: each Node worker thread owns one instance and dispatches
+   * one request at a time.
+   */
+  locale: LocaleState;
   projectRoot?: string;
   componentRegistry?: Map<string, string>;
   memoryStats: MemoryStats;
