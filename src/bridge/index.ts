@@ -485,6 +485,20 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _state_reset_all(): void {},
       _state_reset_named(_namePtr: number): void {},
 
+      // Arena scope functions (emitted by compiler 0.31.5+ as env imports).
+      // Compiler-side ABI for tracking allocations that should be freed at
+      // scope exit. On this host we don't need scope tracking — Node's
+      // memory management + the existing scope_push/scope_pop WASM exports
+      // (see wasm/memory.ts) already cover reclamation. These stubs satisfy
+      // the WASM linker so fresh modules can instantiate.
+      //
+      // HOST-BRIDGE-E001 (report id 4eec422b): shipped as no-op stubs per
+      // the report's suggested minimal fix. If a future feature actually
+      // depends on arena-scope semantics being tracked, this stub needs a
+      // real implementation.
+      _arena_scope_push(): number { return 0; },
+      _arena_scope_pop(_marker: number): void {},
+
       // Runtime error reporting from compiled modules.
       // LP-format signature (ptr, len) matches RUNTIME001 fix in clean-server (2c43399).
       // Reads the message and logs to stderr; the request continues so the WASM
