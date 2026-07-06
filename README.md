@@ -160,6 +160,10 @@ npm test
 npm run dev -- path/to/your-app.wasm --verbose
 ```
 
+### CI: host bridge parity
+
+CI enforces bridge parity against `foundation/platform-architecture/function-registry.toml` via `check_host_parity.py`. Pull requests fail if the host is missing a registered bridge function. This gate prevents ABI drift like the 2026-07-06 `_arena_scope_push`/`_arena_scope_pop` incident, where a compiler-side import was left unimplemented on the host side. When adding a new bridge, register the canonical `_namespace_fn` name in `src/bridge/index.ts` (see [CLAUDE.md](./CLAUDE.md#bridge-function-naming--canonical-names-only-v030123)).
+
 ## Requirements
 
 - Node.js 18 or later

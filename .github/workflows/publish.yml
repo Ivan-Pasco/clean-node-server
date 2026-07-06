@@ -4,8 +4,40 @@ on:
   push:
     tags:
       - 'v*'
+  pull_request:
+    branches:
+      - main
 
 jobs:
+  parity:
+    # Enforces host bridge parity against foundation/platform-architecture/function-registry.toml.
+    # Prevents the class of incident that took down errors.cleanlanguage.dev on 2026-07-06
+    # (compiler emitted _arena_scope_push/_pop imports that no host had registered).
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout clean-node-server
+        uses: actions/checkout@v4
+        with:
+          path: clean-node-server
+
+      - name: Checkout foundation (clean-language-spec)
+        uses: actions/checkout@v4
+        with:
+          repository: Ivan-Pasco/clean-language-spec
+          path: foundation
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run host-parity check
+        env:
+          CLEAN_LANGUAGE_ROOT: ${{ github.workspace }}
+        run: |
+          python3 foundation/management/scripts/check_host_parity.py \
+            --host node-server --strict --verbose
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -24,7 +56,8 @@ jobs:
         run: npm run test:run
 
   publish:
-    needs: test
+    needs: [test, parity]
+    if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
