@@ -20,11 +20,19 @@ jobs:
         with:
           path: clean-node-server
 
-      - name: Checkout foundation (clean-language-spec)
+      # clean-language-spec has a top-level `foundation/` subfolder; sparse-checkout
+      # pulls only that subtree, then we move it up so the workspace layout matches
+      # what check_host_parity.py expects (<root>/foundation/, <root>/clean-node-server/).
+      - name: Checkout foundation subtree from clean-language-spec
         uses: actions/checkout@v4
         with:
           repository: Ivan-Pasco/clean-language-spec
-          path: foundation
+          path: _spec
+          sparse-checkout: foundation
+          sparse-checkout-cone-mode: false
+
+      - name: Position foundation at workspace root
+        run: mv _spec/foundation foundation
 
       - name: Setup Python
         uses: actions/setup-python@v5
