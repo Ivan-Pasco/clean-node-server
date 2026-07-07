@@ -60,7 +60,22 @@ export function readLengthPrefixedString(memory: WebAssembly.Memory, ptr: number
 
   if (len === 0) return '';
   if (ptr + 4 + len > buffer.byteLength) {
-    throw new Error(`Invalid string length: ${len} at ptr ${ptr} (buffer ${buffer.byteLength})`);
+    // Same diagnostic path as readRawString — a bogus length prefix means
+    // the WASM code either overwrote the prefix bytes or passed a pointer
+    // that no longer points to a valid string header.
+    const detail = describeOobRead(buffer, ptr, len);
+    const err = new Error(
+      `Invalid string length: ${len} at ptr ${ptr} (buffer ${buffer.byteLength})`
+    );
+    console.error('[node-server] Invalid string length prefix', {
+      ptr,
+      len,
+      bufferSize: buffer.byteLength,
+      bytesAtPtr: detail.bytesAtPtr,
+      lenAsAscii: detail.lenAsAscii,
+      stack: err.stack,
+    });
+    throw err;
   }
 
   const bytes = new Uint8Array(buffer, ptr + 4, len);
@@ -82,11 +97,66 @@ export function readRawString(memory: WebAssembly.Memory, ptr: number, len: numb
   // Snap buffer once so the bounds check and the read use the same backing buffer.
   const buffer = memory.buffer;
   if (ptr + len > buffer.byteLength) {
-    throw new Error(`String read out of bounds: ptr=${ptr}, len=${len}, bufferSize=${buffer.byteLength}`);
+    // NODE-SERVER-STRING-READ-OOB-INTERMITTENT: dump forensic context so ops
+    // can correlate silent 500s to specific request patterns. Impossibly large
+    // `len` values (>bufferSize) mean the WASM caller misread stale bytes as a
+    // length; capturing the bytes at ptr helps identify which prior allocation
+    // leaked, and the stack frame identifies which bridge function is passing
+    // through the garbage.
+    const detail = describeOobRead(buffer, ptr, len);
+    const err = new Error(
+      `String read out of bounds: ptr=${ptr}, len=${len}, bufferSize=${buffer.byteLength}`
+    );
+    console.error('[node-server] String read out of bounds', {
+      ptr,
+      len,
+      bufferSize: buffer.byteLength,
+      bytesAtPtr: detail.bytesAtPtr,
+      lenAsAscii: detail.lenAsAscii,
+      stack: err.stack,
+    });
+    throw err;
   }
 
   const bytes = new Uint8Array(buffer, ptr, len);
   return new TextDecoder('utf-8').decode(bytes);
+}
+
+/**
+ * Produce a diagnostic summary for an out-of-bounds string read.
+ *
+ * Returns:
+ *   - `bytesAtPtr`: hex dump of up to 16 bytes starting at `ptr`, so ops can
+ *     see what was actually in memory (e.g. leftover ASCII from a prior
+ *     request that got misread as a length prefix).
+ *   - `lenAsAscii`: `len` reinterpreted as 4 little-endian ASCII bytes, so a
+ *     value like 1684632162 shows up as its printable form ("bmnd") — a
+ *     strong signal that a stale string slice bled into the length field.
+ */
+function describeOobRead(buffer: ArrayBuffer, ptr: number, len: number): {
+  bytesAtPtr: string;
+  lenAsAscii: string;
+} {
+  const view = new Uint8Array(buffer);
+  const start = Math.max(0, Math.min(ptr, view.length));
+  const end = Math.min(view.length, start + 16);
+  const chunk: string[] = [];
+  for (let i = start; i < end; i++) {
+    chunk.push(view[i].toString(16).padStart(2, '0'));
+  }
+  const lenBytes = [
+    len & 0xff,
+    (len >>> 8) & 0xff,
+    (len >>> 16) & 0xff,
+    (len >>> 24) & 0xff,
+  ];
+  const lenAscii = lenBytes
+    .map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.'))
+    .join('');
+  return {
+    bytesAtPtr: chunk.length > 0 ? chunk.join(' ') : '(ptr past buffer end)',
+    lenAsAscii: lenAscii,
+  };
 }
 
 /**
