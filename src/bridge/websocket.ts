@@ -116,10 +116,30 @@ export async function attachWebsocketServer(
   state: WasmState,
 ): Promise<void> {
   if (wsServer) return;
+  // Skip attach if the app never called _http_ws_route — no WS routes means
+  // there is nothing to upgrade, so loading `ws` would waste ~1MB of heap.
+  if (wsRoutes.size === 0) return;
+
   wsState = state;
   httpServerRef = httpServer;
 
-  const { WebSocketServer: ServerCtor } = await import('ws');
+  // `ws` is an optional dependency. Production installs that don't need
+  // WebSockets should not fail startup, and the log line must not carry a
+  // full requireStack (which pino's err serializer would expand into a
+  // multi-line trace on every process start).
+  let ServerCtor: typeof WebSocketServer;
+  try {
+    ({ WebSocketServer: ServerCtor } = await import('ws'));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ERR_MODULE_NOT_FOUND' || code === 'MODULE_NOT_FOUND') {
+      warnLog('optional dependency `ws` is not installed; WebSocket routes will be inactive. Run `npm install ws` to enable.');
+      httpServerRef = null;
+      wsState = null;
+      return;
+    }
+    throw err;
+  }
   wsServer = new ServerCtor({ noServer: true });
 
   upgradeHandler = (req, socket, head) => {
