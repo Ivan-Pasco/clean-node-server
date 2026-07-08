@@ -18,7 +18,10 @@
       "Bash(curl -sS -o /dev/null -w \"HTTP %{http_code} | time %{time_total}s\\\\n\" https://errors.cleanlanguage.dev/)",
       "Bash(curl -sS -o /dev/null -w \"HTTP %{http_code} | time %{time_total}s\\\\n\" https://errors.cleanlanguage.dev/api/health)",
       "Bash(echo '=== __TRACKED_VAR__ ===')",
-      "Bash(git stash *)"
+      "Bash(git stash *)",
+      "Bash(cleen --version)",
+      "Bash(cleen list *)",
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=server&status=open')"
     ]
   }
 }

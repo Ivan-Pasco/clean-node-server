@@ -64,3 +64,17 @@ Some dot-notation names ARE still required because the compiler emits them direc
 These are explicitly registered in `bridge/index.ts` and must stay.
 
 See [`foundation/platform-architecture/HOST_BRIDGE.md`](../foundation/platform-architecture/HOST_BRIDGE.md) and [`foundation/platform-architecture/function-registry.toml`](../foundation/platform-architecture/function-registry.toml) for the authoritative registry.
+
+## Cross-component prompts
+
+The team publishes cross-component prompts, change requests, and handoffs at https://errors.cleanlanguage.dev/prompts.
+
+- `/team-prompt` publishes a prompt. Use it when this session discovered something a session in a **different** component must know before working: a required change there, a discovered contract, a blocker needing a decision from another maintainer, or a session-end handoff whose next reader is in a different repo.
+- `/team-prompts-list` fetches open prompts addressed to this component (inferred from `$PWD`). Consider running it at session start if the user asks for status.
+
+Do **not** use these skills for:
+- Compiler/plugin/runtime bug reports — those go through `report_error` via the MCP server.
+- Same-component notes — use `TASKS.md` or a session-handoff markdown file.
+- Chat.
+
+The API token lives at `~/.config/clean-errors/api_token` (mode 600). Team members without it get it from the team vault.
