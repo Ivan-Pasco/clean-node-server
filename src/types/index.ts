@@ -175,6 +175,18 @@ export interface ServerConfig {
   rateLimitWindowMs?: number;
   corsOrigin?: string;
   pgPoolSize?: number;
+  /**
+   * If set, the process monitors RSS and initiates graceful exit when it
+   * crosses this many bytes. Purpose: avoid wedging in
+   * `mem_cgroup_handle_over_high` when running under a systemd cgroup with
+   * MemoryMax. On graceful exit systemd's Restart=always brings the service
+   * back cleanly; the alternative is a D-state process that needs SIGKILL.
+   */
+  memorySoftLimitBytes?: number;
+  /**
+   * How often to sample RSS for the soft-limit guard, in ms. Default 5000.
+   */
+  memorySoftLimitPollMs?: number;
 }
 
 /**

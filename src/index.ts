@@ -8,6 +8,7 @@ import { RedisSessionStore } from './session/redis-store';
 import { createDatabaseDriver } from './database';
 import { setSandboxRoot } from './bridge/file';
 import { createLogger } from './telemetry/logger';
+import { startMemoryGuard } from './telemetry/memory-guard';
 import { ServerConfig, DatabaseDriver, AnySessionStore } from './types';
 
 const program = new Command();
@@ -25,6 +26,8 @@ program
   .option('--jwt-secret <string>', 'JWT secret key', 'clean-node-server-jwt-secret')
   .option('--sandbox <path>', 'Sandbox root for file operations (default: wasm file directory)')
   .option('--memory-limit <MB>', 'Cap WASM linear memory per instance (MB)')
+  .option('--memory-soft-limit <MB>', 'When process RSS crosses this (MB), drain in-flight requests and exit(0). Prevents the kernel cgroup throttle wedge.')
+  .option('--memory-soft-limit-poll <ms>', 'Sampling interval for --memory-soft-limit, in ms (default 5000)', '5000')
   .option('--tls-cert <path>', 'Path to TLS certificate file')
   .option('--tls-key <path>', 'Path to TLS private key file')
   .option('--rate-limit <n>', 'Max requests per window per IP (0 = disabled)', '0')
@@ -55,6 +58,22 @@ program
         memoryLimitBytes = Math.floor(mb * 1024 * 1024);
       }
 
+      let memorySoftLimitBytes: number | undefined;
+      if (options.memorySoftLimit !== undefined) {
+        const mb = Number(options.memorySoftLimit);
+        if (!Number.isFinite(mb) || mb <= 0) {
+          console.error(`Invalid --memory-soft-limit: ${options.memorySoftLimit} (must be a positive number of MB)`);
+          process.exit(1);
+        }
+        memorySoftLimitBytes = Math.floor(mb * 1024 * 1024);
+      }
+
+      const memorySoftLimitPollMs = parseInt(options.memorySoftLimitPoll, 10) || 5000;
+      if (memorySoftLimitPollMs < 250) {
+        console.error(`Invalid --memory-soft-limit-poll: ${options.memorySoftLimitPoll} (minimum 250ms)`);
+        process.exit(1);
+      }
+
       const config: ServerConfig = {
         port: parseInt(options.port, 10),
         host: options.host,
@@ -69,6 +88,8 @@ program
         rateLimitWindowMs: parseInt(options.rateLimitWindow, 10) || 60000,
         corsOrigin: options.corsOrigin,
         pgPoolSize: parseInt(options.pgPoolSize, 10) || 20,
+        memorySoftLimitBytes,
+        memorySoftLimitPollMs,
       };
 
       const log = createLogger(config.verbose);
@@ -128,8 +149,12 @@ program
       await server.initialize();
       await server.start(config.port);
 
-      const shutdown = async () => {
+      let shuttingDown = false;
+      const shutdown = async (exitCode = 0) => {
+        if (shuttingDown) return;
+        shuttingDown = true;
         log.info('Shutting down...');
+        memoryGuard?.stop();
         // Start the force-exit watchdog only once shutdown begins, not at startup.
         const forceExit = setTimeout(() => {
           console.error('[shutdown] Forced exit after 35s timeout');
@@ -139,11 +164,27 @@ program
         await server.gracefulShutdown(30000);
         if (database) await database.close();
         await sessionStore.close();
-        process.exit(0);
+        process.exit(exitCode);
       };
 
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
+      let memoryGuard: ReturnType<typeof startMemoryGuard> | undefined;
+      if (config.memorySoftLimitBytes) {
+        memoryGuard = startMemoryGuard(
+          config.memorySoftLimitBytes,
+          config.memorySoftLimitPollMs ?? 5000,
+          (_rss) => {
+            // Fire-and-forget: shutdown() itself is idempotent via `shuttingDown`.
+            void shutdown(0);
+          },
+        );
+        log.info({
+          softLimitMB: Math.round(config.memorySoftLimitBytes / (1024 * 1024)),
+          pollMs: config.memorySoftLimitPollMs,
+        }, 'Memory soft-limit guard active');
+      }
+
+      process.on('SIGINT', () => { void shutdown(0); });
+      process.on('SIGTERM', () => { void shutdown(0); });
     } catch (err) {
       console.error('Failed to start server:', err);
       process.exit(1);
