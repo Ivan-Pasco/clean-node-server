@@ -13,10 +13,43 @@ const DEFAULT_POOL_SIZE = Number(process.env.WASM_POOL_SIZE ?? '4');
 const MAX_REQUEST_COUNT = 1000;
 const MAX_HEAP_GROWTH_BYTES = 50 * 1024 * 1024;
 
+/**
+ * Compute the retained WASM growth since instance creation for rotation.
+ *
+ * Reports the larger of:
+ *   - __heap_ptr growth (accumulates for compilers without scope_pop, and for
+ *     modules where allocations survive scope_pop e.g. long-lived globals).
+ *   - memory.buffer.byteLength growth (permanent — memory.grow() cannot shrink,
+ *     so peak WASM buffer size is retained even after scope_pop rewinds
+ *     __heap_ptr). Rotating only on heapPtr means a worker that once handled a
+ *     large request keeps the enlarged buffer for its full 1000-request
+ *     lifetime — the root of NODE-SERVER-CGROUP-THROTTLE-WEDGE.
+ */
+export function computeRetainedGrowth(
+  currentHeapPtr: number,
+  currentMemoryBytes: number,
+  initialHeapPtr: number,
+  initialMemoryBytes: number
+): number {
+  const heapGrown = Math.max(0, currentHeapPtr - initialHeapPtr);
+  const bufferGrown = Math.max(0, currentMemoryBytes - initialMemoryBytes);
+  return heapGrown > bufferGrown ? heapGrown : bufferGrown;
+}
+
+export function shouldRotate(
+  requestCount: number,
+  retainedGrowth: number,
+  maxRequests: number = MAX_REQUEST_COUNT,
+  maxGrowthBytes: number = MAX_HEAP_GROWTH_BYTES
+): boolean {
+  return requestCount >= maxRequests || retainedGrowth > maxGrowthBytes;
+}
+
 interface PoolEntry {
   state: WasmState;
   requestCount: number;
   initialHeapPtr: number;
+  initialMemoryBytes: number;
 }
 
 export class WasmInstancePool {
@@ -64,6 +97,7 @@ export class WasmInstancePool {
       state,
       requestCount: 0,
       initialHeapPtr: this.readHeapPtr(state),
+      initialMemoryBytes: state.exports.memory.buffer.byteLength,
     };
 
     this.entryMap.set(state, entry);
@@ -82,9 +116,14 @@ export class WasmInstancePool {
     const entry = this.entryMap.get(state);
     if (!entry) return;
 
-    const heapGrown = this.readHeapPtr(state) - entry.initialHeapPtr;
+    const retainedGrowth = computeRetainedGrowth(
+      this.readHeapPtr(state),
+      state.exports.memory.buffer.byteLength,
+      entry.initialHeapPtr,
+      entry.initialMemoryBytes
+    );
 
-    if (entry.requestCount >= MAX_REQUEST_COUNT || heapGrown > MAX_HEAP_GROWTH_BYTES) {
+    if (shouldRotate(entry.requestCount, retainedGrowth)) {
       this.entryMap.delete(state);
       this.spawn()
         .then((e) => { this.entryMap.set(e.state, e); this.available.push(e); })

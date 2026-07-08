@@ -7,6 +7,7 @@ import { setSandboxRoot } from '../bridge/file';
 import { SyncHttpClient } from '../bridge/http-client';
 import { setRequestContext, getResponse } from '../wasm/state';
 import { readLengthPrefixedString, preGrowMemory } from '../wasm/memory';
+import { computeRetainedGrowth, shouldRotate } from '../wasm/pool';
 import { RouteRegistry } from '../router';
 import { setRouteRegistry } from '../bridge/http-server';
 import { WasmState, DatabaseDriver } from '../types';
@@ -44,6 +45,7 @@ let database: DatabaseDriver | undefined;
 let httpWorkerClient: SyncHttpClient | null = null;
 let requestCount = 0;
 let initialHeapPtr = 0;
+let initialMemoryBytes = 0;
 
 function readHeapPtr(): number {
   if (!wasmState) return 0;
@@ -52,6 +54,15 @@ function readHeapPtr(): number {
     return (g as WebAssembly.Global).value as number;
   }
   return wasmState.memoryStats.initialHeapPtr;
+}
+
+function readMemoryBytes(): number {
+  if (!wasmState) return 0;
+  return wasmState.exports.memory.buffer.byteLength;
+}
+
+function effectiveGrowthBytes(): number {
+  return computeRetainedGrowth(readHeapPtr(), readMemoryBytes(), initialHeapPtr, initialMemoryBytes);
 }
 
 function resetRequestState(): void {
@@ -107,6 +118,7 @@ async function initialize(): Promise<void> {
 
   state.routeRegistry = routeRegistry.getRoutes();
   initialHeapPtr = readHeapPtr();
+  initialMemoryBytes = readMemoryBytes();
 
   parentPort!.postMessage({ type: 'ready' } satisfies WorkerReadyMsg);
 }
@@ -186,8 +198,8 @@ parentPort.on('message', (msg: WorkerInbound) => {
     resetPerRequestBridgeState();
 
     requestCount++;
-    const heapGrown = readHeapPtr() - initialHeapPtr;
-    const needsRestart = requestCount >= MAX_REQUEST_COUNT || heapGrown > MAX_HEAP_GROWTH_BYTES;
+    const heapGrown = effectiveGrowthBytes();
+    const needsRestart = shouldRotate(requestCount, heapGrown, MAX_REQUEST_COUNT, MAX_HEAP_GROWTH_BYTES);
 
     parentPort!.postMessage({
       type: 'response',
@@ -226,8 +238,8 @@ parentPort.on('message', (msg: WorkerInbound) => {
     try { resetPerRequestBridgeState(); } catch { /* defensive — never block error reporting */ }
     requestCount++;
     let heapGrown = 0;
-    try { heapGrown = readHeapPtr() - initialHeapPtr; } catch { /* heap unreadable post-trap */ }
-    const needsRestart = requestCount >= MAX_REQUEST_COUNT || heapGrown > MAX_HEAP_GROWTH_BYTES;
+    try { heapGrown = effectiveGrowthBytes(); } catch { /* heap unreadable post-trap */ }
+    const needsRestart = shouldRotate(requestCount, heapGrown, MAX_REQUEST_COUNT, MAX_HEAP_GROWTH_BYTES);
     parentPort!.postMessage({
       type: 'response',
       id,
