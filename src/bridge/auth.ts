@@ -1,3 +1,4 @@
+import * as crypto from 'crypto';
 import { WasmState } from '../types';
 import { readString, writeString, log } from './helpers';
 import { getRequestContext, addResponseCookie } from '../wasm/state';
@@ -20,6 +21,35 @@ export function getRegisteredRoles(): Map<string, string[]> {
  */
 export function resetRegisteredRoles(): void {
   registeredRoles.clear();
+}
+
+/**
+ * Password reset tokens. Stored as sha256(token) → { userId, expiresAt } so a
+ * memory dump does not leak usable plaintext tokens. Consume is atomic under
+ * the JS single-threaded event loop (delete-if-present is one tick).
+ *
+ * Backs `_auth_create_reset_token` / `_auth_consume_reset_token`
+ * (frame.auth spec §16).
+ */
+interface ResetTokenEntry {
+  userId: number;
+  expiresAt: number;
+}
+const resetTokens = new Map<string, ResetTokenEntry>();
+
+function sweepResetTokens(now: number): void {
+  for (const [hash, entry] of resetTokens) {
+    if (entry.expiresAt <= now) resetTokens.delete(hash);
+  }
+}
+
+/** Test helper — reset password-reset token store between tests. */
+export function resetPasswordResetTokens(): void {
+  resetTokens.clear();
+}
+
+function sha256Hex(input: string): string {
+  return crypto.createHash('sha256').update(input).digest('hex');
 }
 
 /**
@@ -466,6 +496,70 @@ export function createAuthBridge(getState: () => WasmState) {
         log(state, 'AUTH', 'Failed to create session', err);
         return 0;
       }
+    },
+
+    /**
+     * Create a password reset token for `userId` valid for `ttlSeconds`.
+     * Returns an opaque 64-char hex token; the store keeps only sha256(token).
+     *
+     * Backs `auth.createResetToken(userId, ttlSeconds)` per frame.auth spec §16.
+     * Returns empty string on invalid inputs.
+     *
+     * Registry: _auth_create_reset_token(integer, integer) -> ptr
+     */
+    _auth_create_reset_token(userId: number, ttlSeconds: number): number {
+      const state = getState();
+
+      if (userId <= 0 || ttlSeconds <= 0) {
+        return writeString(state, '');
+      }
+
+      const now = Date.now();
+      sweepResetTokens(now);
+
+      const token = crypto.randomBytes(32).toString('hex');
+      const hash = sha256Hex(token);
+
+      if (resetTokens.has(hash)) {
+        log(state, 'AUTH', `_auth_create_reset_token: hash collision for user ${userId}`);
+        return writeString(state, '');
+      }
+
+      resetTokens.set(hash, {
+        userId: userId | 0,
+        expiresAt: now + ttlSeconds * 1000,
+      });
+
+      return writeString(state, token);
+    },
+
+    /**
+     * Atomically validate and consume a password reset token.
+     * Returns the associated userId on success, or 0 if the token is invalid,
+     * expired, or already consumed.
+     *
+     * Backs `auth.consumeResetToken(token)` per frame.auth spec §16.
+     *
+     * Registry: _auth_consume_reset_token(string) -> integer
+     */
+    _auth_consume_reset_token(tokenPtr: number, tokenLen: number): number {
+      const state = getState();
+
+      if (tokenLen <= 0) return 0;
+      const token = readString(state, tokenPtr, tokenLen);
+      if (!token) return 0;
+
+      const hash = sha256Hex(token);
+      const entry = resetTokens.get(hash);
+      if (!entry) return 0;
+
+      // Delete first — one tick under the JS event loop, so a concurrent
+      // consume of the same token sees the row already gone.
+      resetTokens.delete(hash);
+
+      if (entry.expiresAt <= Date.now()) return 0;
+
+      return entry.userId;
     },
 
     /**

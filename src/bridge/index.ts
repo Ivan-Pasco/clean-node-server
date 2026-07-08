@@ -549,8 +549,8 @@ export {
 } from './http-server';
 export { createRequestBridge } from './request';
 export { createSessionBridge } from './session';
-export { createAuthBridge, getRegisteredRoles, resetRegisteredRoles } from './auth';
-export { createCryptoBridge } from './crypto';
+export { createAuthBridge, getRegisteredRoles, resetRegisteredRoles, resetPasswordResetTokens } from './auth';
+export { createCryptoBridge, resetConsumedJtis } from './crypto';
 export { createDatabaseBridge } from './database';
 export { createHttpClientBridge } from './http-client';
 export { createFileBridge, setSandboxRoot } from './file';

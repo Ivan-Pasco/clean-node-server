@@ -10,6 +10,27 @@ import { readString, writeString, log } from './helpers';
 const BCRYPT_ROUNDS = 10;
 
 /**
+ * Consumed JWT `jti` values, mapped to their revocation-entry expiry (ms since epoch).
+ * Populated by `_jwt_refresh_and_rotate` to enforce single-use refresh rotation
+ * (AUTH-J007 / AUTH-J009). Entries are evicted on access after expiry, and by
+ * the periodic sweep below.
+ */
+const consumedJtis = new Map<string, number>();
+
+const CONSUMED_JTI_MAX_TTL_MS = 30 * 24 * 3600 * 1000;
+
+function sweepConsumedJtis(now: number): void {
+  for (const [jti, expiry] of consumedJtis) {
+    if (expiry <= now) consumedJtis.delete(jti);
+  }
+}
+
+/** Test helper — reset revocation list between tests. */
+export function resetConsumedJtis(): void {
+  consumedJtis.clear();
+}
+
+/**
  * Create cryptographic bridge functions
  */
 export function createCryptoBridge(getState: () => WasmState) {
@@ -179,6 +200,96 @@ export function createCryptoBridge(getState: () => WasmState) {
         }
         return writeString(state, '');
       } catch {
+        return writeString(state, '');
+      }
+    },
+
+    /**
+     * Verify a JWT refresh token, atomically mark its `jti` as consumed, and
+     * return a freshly-signed token with a new `jti`, `iat`, and
+     * `exp = now + newTtlSeconds`. Enforces AUTH-J007 / AUTH-J009 single-use
+     * rotation: replaying an already-rotated token returns empty string.
+     *
+     * Returns empty string on any of: invalid signature, expired token,
+     * missing `jti` claim, or replay of a consumed token.
+     *
+     * Registry: _jwt_refresh_and_rotate(string, string, string, integer) -> ptr
+     */
+    _jwt_refresh_and_rotate(
+      tokenPtr: number,
+      tokenLen: number,
+      secretPtr: number,
+      secretLen: number,
+      algoPtr: number,
+      algoLen: number,
+      newTtlSeconds: number
+    ): number {
+      const state = getState();
+
+      if (tokenLen <= 0 || newTtlSeconds <= 0) {
+        return writeString(state, '');
+      }
+
+      const token = readString(state, tokenPtr, tokenLen);
+      if (!token) return writeString(state, '');
+
+      const secret = secretLen > 0
+        ? readString(state, secretPtr, secretLen)
+        : state.config.jwtSecret;
+      if (!secret) return writeString(state, '');
+
+      const algorithm = algoLen > 0 ? readString(state, algoPtr, algoLen) : 'HS256';
+
+      let payload: Record<string, unknown>;
+      try {
+        const verified = jwt.verify(token, secret, {
+          algorithms: [algorithm as jwt.Algorithm],
+        });
+        if (typeof verified !== 'object' || verified === null) {
+          return writeString(state, '');
+        }
+        payload = { ...(verified as Record<string, unknown>) };
+      } catch (err) {
+        log(state, 'CRYPTO', 'jwt_refresh_and_rotate: verification failed', err);
+        return writeString(state, '');
+      }
+
+      const oldJti = typeof payload.jti === 'string' ? payload.jti : '';
+      if (!oldJti) {
+        log(state, 'CRYPTO', 'jwt_refresh_and_rotate: token has no jti; refusing rotation');
+        return writeString(state, '');
+      }
+
+      const nowMs = Date.now();
+      sweepConsumedJtis(nowMs);
+
+      const existing = consumedJtis.get(oldJti);
+      if (existing !== undefined && existing > nowMs) {
+        log(state, 'CRYPTO', `jwt_refresh_and_rotate: replay of consumed jti=${oldJti}`);
+        return writeString(state, '');
+      }
+
+      const nowSec = Math.floor(nowMs / 1000);
+      const oldExp = typeof payload.exp === 'number' ? payload.exp : 0;
+      const remainingSec = Math.max(0, oldExp - nowSec);
+      const revokeTtlMs = Math.min(remainingSec * 1000, CONSUMED_JTI_MAX_TTL_MS);
+      consumedJtis.set(oldJti, nowMs + revokeTtlMs);
+
+      const newExp = nowSec + Math.floor(newTtlSeconds);
+      delete payload.iat;
+      delete payload.exp;
+      payload.jti = crypto.randomUUID();
+      payload.iat = nowSec;
+      payload.exp = newExp;
+
+      try {
+        const newToken = jwt.sign(payload, secret, {
+          algorithm: algorithm as jwt.Algorithm,
+        });
+        return writeString(state, newToken);
+      } catch (err) {
+        log(state, 'CRYPTO', 'jwt_refresh_and_rotate: sign failed', err);
+        consumedJtis.delete(oldJti);
         return writeString(state, '');
       }
     },
