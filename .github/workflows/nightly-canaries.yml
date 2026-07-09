@@ -1,0 +1,108 @@
+name: Nightly Canaries
+
+# Cross-Component Contract Canaries — Layer 2 (node-server).
+#
+# Compiles the canary corpus with the current `cln` release and runs each
+# canary against clean-node-server's real bridge imports. A red run means
+# either the compiler emits an import this host does not implement (bridge
+# parity drift) or a bridge function's runtime behavior has regressed.
+#
+# See umbrella prompt 7fb425cb-79ba-11f1-9586-da25a95a496b (Layer 2,
+# node-server child 6ace888b-7a8d-11f1-9586-da25a95a496b).
+
+on:
+  schedule:
+    # 06:00 UTC nightly — after the compiler's own nightly window.
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      compiler_ref:
+        description: 'clean-language-compiler ref to build cln from (default: latest tag)'
+        required: false
+        default: ''
+      canary_ref:
+        description: 'ref providing tests/cln/canaries (defaults to compiler_ref)'
+        required: false
+        default: ''
+
+jobs:
+  canaries:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Checkout clean-node-server
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build TypeScript (dist/)
+        run: npm run build
+
+      - name: Setup Rust toolchain (for cln)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            _compiler/target
+          key: ${{ runner.os }}-cargo-canary-${{ hashFiles('_compiler/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-canary-
+
+      - name: Checkout clean-language-compiler
+        uses: actions/checkout@v4
+        with:
+          repository: Ivan-Pasco/clean-language-compiler
+          path: _compiler
+          ref: ${{ inputs.compiler_ref || '' }}
+
+      - name: Build and install cln
+        working-directory: _compiler
+        run: |
+          cargo install --path . --locked --bin cln
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      - name: Verify cln + locate canary corpus
+        run: |
+          cln --version
+          test -d _compiler/tests/cln/canaries
+          ls _compiler/tests/cln/canaries
+
+      - name: Run canaries
+        env:
+          CANARY_DIR: ${{ github.workspace }}/_compiler/tests/cln/canaries
+          # Deterministic env for env.cln — no host env should leak in.
+          CLEAN_CANARY_UNSET_9f8e7d: ''
+        run: node scripts/run_canaries.mjs --json > canary-report.json || echo "CANARY_FAILED=1" >> $GITHUB_ENV
+
+      - name: Print human-readable summary
+        if: always()
+        run: |
+          node -e "
+            const r = JSON.parse(require('fs').readFileSync('canary-report.json','utf8')).results;
+            for (const x of r) console.log(x.canary.padEnd(24), x.status);
+            const failed = r.filter(x => x.status !== 'pass');
+            console.log('---');
+            console.log(failed.length + ' of ' + r.length + ' failed');
+          "
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: canary-report
+          path: canary-report.json
+
+      - name: Fail if any canary failed
+        if: env.CANARY_FAILED == '1'
+        run: exit 1
