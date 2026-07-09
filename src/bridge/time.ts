@@ -7,18 +7,15 @@ import { readString, writeString } from './helpers';
 export function createTimeBridge(getState: () => WasmState) {
   return {
     /**
-     * Get current time as JSON with ISO string and epoch
+     * Current Unix timestamp in seconds since epoch (i64).
      *
-     * @returns Pointer to JSON { iso: string, epoch: number }
+     * Registry: foundation/platform-architecture/function-registry.toml — _time_now
+     * returns i64. Node's WebAssembly bindings require host functions typed i64
+     * to return a BigInt; returning a plain Number triggers
+     * "Cannot convert N to a BigInt" at the call site.
      */
-    _time_now(): number {
-      const state = getState();
-      const now = new Date();
-
-      return writeString(state, JSON.stringify({
-        iso: now.toISOString(),
-        epoch: now.getTime(),
-      }));
+    _time_now(): bigint {
+      return BigInt(Math.floor(Date.now() / 1000));
     },
 
     /**

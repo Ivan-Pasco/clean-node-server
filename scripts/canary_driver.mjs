@@ -32,6 +32,13 @@ const { createBridgeImports } = bridgeIndex;
 const { createWasmState } = stateModule;
 const { InMemorySessionStore } = sessionStoreModule;
 
+// Canaries write to /tmp/clean_canary_*.txt. The file bridge is sandboxed
+// to sandboxRoot (default process.cwd()); expand it to /tmp so the file
+// canary can round-trip. Same posture as the real host running with
+// --sandbox /tmp for a file-heavy workload.
+const fileBridgeModule = require(resolve(REPO_ROOT, 'dist', 'bridge', 'file.js'));
+fileBridgeModule.setSandboxRoot('/tmp');
+
 async function main() {
 	const wasmPath = process.argv[2];
 	if (!wasmPath) {
