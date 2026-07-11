@@ -1,18 +1,25 @@
 /**
- * CNS-MEM-SCOPE-POP-IGNORES-NEW-COMPILER-PRIMITIVE
+ * NODE-SERVER-BRIDGE-OOB-TASKS-FILTER (supersedes CNS-MEM-SCOPE-POP-…)
  *
- * Compiler 0.30.330+ exports `scope_push` (snapshots `__heap_ptr`) and
- * `scope_pop` (restores it). Per-allocation `mem_release` no longer rewinds
- * the bump pointer — `free` is now a no-op stub — so reclaiming string
- * buffers from writeLengthPrefixedString / __malloc (which never register
- * with `mem_alloc` / refcounts) requires the bridge to actually call
- * `state.exports.scope_pop(snapshot)`.
+ * The registry (foundation/platform-architecture/function-registry.toml)
+ * declares `mem_scope_push` and `mem_scope_pop` as "no-op currently" for
+ * every host. Prior revisions of this bridge called the WASM-side
+ * `scope_pop` export inside `mem_scope_pop` to rewind `__heap_ptr`, which
+ * matched a well-intentioned leak-fix but broke Clean programs that
+ * accumulate string state across compiler-emitted scope brackets
+ * (`html = html + ...` inside a while loop). Each pop reclaimed the
+ * accumulator's backing bytes; the next iteration read garbage and
+ * traps fired with "memory access out of bounds".
  *
- * These tests pin that contract:
- *   1. mem_scope_push captures the snapshot from `state.exports.scope_push()`.
- *   2. mem_scope_pop calls `state.exports.scope_pop(snapshot)`.
- *   3. The fallback path (no scope_push/scope_pop exports) still works for
- *      pre-0.30.330 modules, exercising the legacy per-allocation cleanup.
+ * The correct per-request heap rewind lives in workers/request-worker.ts,
+ * where it runs exactly once after response body/headers/cookies have
+ * been materialized as JS values. These tests pin the corrected contract:
+ *
+ *   1. `mem_scope_push` does NOT call `state.exports.scope_push`.
+ *   2. `mem_scope_pop`  does NOT call `state.exports.scope_pop`.
+ *   3. Legacy per-`mem_alloc` refcount cleanup still runs on pop
+ *      (for backward compatibility and JS-side bookkeeping).
+ *   4. Empty-stack pop is a no-op.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -81,80 +88,66 @@ function makeScopeState(opts: {
   };
 }
 
-describe('CNS-MEM-SCOPE-POP — bridge wires scope_push/scope_pop into WASM exports', () => {
+describe('mem_scope_push / mem_scope_pop — no-op for WASM heap; legacy refcount only', () => {
   beforeEach(() => {
     resetMemoryRuntime();
   });
 
-  it('mem_scope_push calls state.exports.scope_push and stores its snapshot', () => {
+  it('mem_scope_push does NOT call state.exports.scope_push', () => {
     const mock = makeScopeState({ startHeap: 4096 });
     const bridge = createMemoryRuntimeBridge(() => mock.state);
 
     bridge.mem_scope_push();
-    expect(mock.pushCalls).toBe(1);
+    expect(mock.pushCalls).toBe(0);
   });
 
-  it('mem_scope_pop hands the snapshot back to state.exports.scope_pop', () => {
-    const mock = makeScopeState({ startHeap: 4096 });
-    const bridge = createMemoryRuntimeBridge(() => mock.state);
-
-    bridge.mem_scope_push();
-    const snapshotAtPush = mock.getHeap();
-
-    // Simulate WASM-internal allocations growing the heap during the scope.
-    mock.setHeap(snapshotAtPush + 8192);
-
-    bridge.mem_scope_pop();
-
-    expect(mock.popCalls).toEqual([snapshotAtPush]);
-    expect(mock.getHeap()).toBe(snapshotAtPush);
-  });
-
-  it('rewinds writeLengthPrefixedString-style allocations that never went through mem_alloc', () => {
-    // This is the exact bottleneck reported in CNS-MEM-…-POP: 1611
-    // string.concat calls per request advanced __heap_ptr via writeString →
-    // __malloc with zero mem_release calls. mem_scope_pop must reclaim them
-    // via scope_pop even though they never registered with the JS refcount.
+  it('mem_scope_pop does NOT call state.exports.scope_pop', () => {
     const mock = makeScopeState({ startHeap: 4096 });
     const bridge = createMemoryRuntimeBridge(() => mock.state);
 
     bridge.mem_scope_push();
     const before = mock.getHeap();
 
-    // Simulate 100 string.concat calls each consuming ~32 bytes.
-    for (let i = 0; i < 100; i++) {
-      (mock.state.exports.malloc as (n: number) => number)(32);
-    }
-    expect(mock.getHeap()).toBeGreaterThan(before);
+    // Simulate WASM-internal allocations growing the heap during the scope.
+    mock.setHeap(before + 8192);
 
     bridge.mem_scope_pop();
-    expect(mock.getHeap()).toBe(before);
+
+    expect(mock.popCalls).toEqual([]);
+    // Heap must NOT be rewound — the per-request rewind in request-worker.ts
+    // handles it once, after response materialization.
+    expect(mock.getHeap()).toBe(before + 8192);
   });
 
-  it('nested scopes rewind only their own allocations', () => {
+  it('accumulator pattern survives a mem_scope_pop that would previously have rewound it', () => {
+    // The exact bug NODE-SERVER-BRIDGE-OOB-TASKS-FILTER protects against:
+    // WASM allocates `html` at address A, enters a scope, allocates more,
+    // exits the scope. Under the old (broken) implementation, `html` at A
+    // would be reclaimed. Under the corrected implementation, `html`
+    // survives past the pop until the outer per-request rewind fires.
     const mock = makeScopeState({ startHeap: 4096 });
     const bridge = createMemoryRuntimeBridge(() => mock.state);
 
-    bridge.mem_scope_push();
-    const outerSnap = mock.getHeap();
-    (mock.state.exports.malloc as (n: number) => number)(64);
+    // Simulate the accumulator being allocated first, outside any inner scope.
+    const htmlPtr = (mock.state.exports.malloc as (n: number) => number)(64);
+    const heapAfterHtml = mock.getHeap();
 
     bridge.mem_scope_push();
-    const innerSnap = mock.getHeap();
-    (mock.state.exports.malloc as (n: number) => number)(128);
-
+    // Simulate concat inside the loop iteration allocating a working buffer.
+    (mock.state.exports.malloc as (n: number) => number)(256);
     bridge.mem_scope_pop();
-    expect(mock.getHeap()).toBe(innerSnap);
 
-    bridge.mem_scope_pop();
-    expect(mock.getHeap()).toBe(outerSnap);
+    // The accumulator's ptr must still be behind the current heap head —
+    // any read of htmlPtr's bytes on the WASM side would land in valid memory.
+    expect(mock.getHeap()).toBeGreaterThanOrEqual(heapAfterHtml);
+    expect(htmlPtr).toBeLessThan(heapAfterHtml);
   });
 
-  it('legacy per-allocation tracking is still reclaimed alongside the scope rewind', () => {
-    // For backward compatibility, mem_alloc'd ptrs are still pushed onto the
-    // scope's allocations array. On pop, those refcounts are decremented and
-    // `free` is called for each. Even though `free` is a no-op stub in modern
-    // compilers, the JS-side refCounts map must still be cleaned up.
+  it('legacy per-allocation refcount cleanup still runs on pop', () => {
+    // mem_alloc'd ptrs are pushed onto the scope's allocations array. On pop,
+    // refcounts are decremented and `free` is called for each. Even though
+    // `free` is a no-op stub in modern compilers, the JS-side refCounts map
+    // is still cleaned up so long-running processes don't grow it unbounded.
     const mock = makeScopeState({ startHeap: 4096 });
     const bridge = createMemoryRuntimeBridge(() => mock.state);
 
@@ -164,13 +157,9 @@ describe('CNS-MEM-SCOPE-POP — bridge wires scope_push/scope_pop into WASM expo
     bridge.mem_scope_pop();
 
     expect(mock.freeCalls).toEqual(expect.arrayContaining([p1, p2]));
-    expect(mock.popCalls.length).toBe(1);
   });
 
   it('fallback: modules without scope_push/scope_pop exports still pop without throwing', () => {
-    // Pre-0.30.330 compilers don't export the scope primitives. mem_scope_pop
-    // must degrade gracefully: do the legacy per-allocation cleanup and skip
-    // the heap rewind.
     const mock = makeScopeState({ withScopes: false, startHeap: 4096 });
     const bridge = createMemoryRuntimeBridge(() => mock.state);
 

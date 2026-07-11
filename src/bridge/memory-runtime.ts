@@ -5,38 +5,31 @@ import { bumpHeapPtr } from '../wasm/memory';
 /**
  * Memory scope stack for tracking allocations.
  *
- * `snapshot` is the `__heap_ptr` value returned by `state.exports.scope_push()`
- * at push time. On pop we hand it back to `state.exports.scope_pop(snapshot)`
- * to rewind the WASM bump allocator's `__heap_ptr` global — that is what
- * actually reclaims string buffers written via writeLengthPrefixedString /
- * concatLengthPrefixed / etc. (none of which register with the per-allocation
- * `allocations` array). `snapshot` is 0 when the WASM module doesn't export
- * scope primitives (compilers < 0.30.330).
- *
  * `allocations` is the legacy per-`mem_alloc` tracking kept for backward
  * compatibility with older compilers and for the few non-region allocators
  * that genuinely want refcount semantics.
+ *
+ * Per foundation/platform-architecture/function-registry.toml, mem_scope_push
+ * and mem_scope_pop are declared "no-op currently" for every host. The per-
+ * request `__heap_ptr` rewind lives in workers/request-worker.ts, where it
+ * fires exactly once per request AFTER response body/headers/cookies have
+ * been materialized as JS values — so no live WASM pointer straddles the
+ * rewind. Rewinding INSIDE the handler on every `mem_scope_pop` (as prior
+ * revisions did) invalidates pointers the WASM still holds — e.g. a while
+ * loop accumulating a string with `html = html + …` where the compiler
+ * emits `mem_scope_push` / `mem_scope_pop` around each iteration but `html`
+ * itself is declared outside the loop. The per-iteration rewind reclaims
+ * html's backing bytes; the next iteration reads garbage → OOB trap.
+ * (NODE-SERVER-BRIDGE-OOB-TASKS-FILTER, fingerprint 654ef241296a631e.)
+ * clean-server's Rust bridge also treats these as no-ops for the same
+ * reason.
  */
 interface MemoryScope {
   allocations: number[];
-  snapshot: number;
 }
 
 let scopeStack: MemoryScope[] = [];
 let refCounts: Map<number, number> = new Map();
-
-type ScopePushFn = () => number;
-type ScopePopFn = (snapshot: number) => void;
-
-function getScopePush(exports: WasmExports): ScopePushFn | undefined {
-  const fn = (exports as unknown as Record<string, unknown>).scope_push;
-  return typeof fn === 'function' ? (fn as ScopePushFn) : undefined;
-}
-
-function getScopePop(exports: WasmExports): ScopePopFn | undefined {
-  const fn = (exports as unknown as Record<string, unknown>).scope_pop;
-  return typeof fn === 'function' ? (fn as ScopePopFn) : undefined;
-}
 
 /**
  * Create memory runtime bridge functions
@@ -143,33 +136,27 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
     /**
      * Push a new memory scope onto the stack.
      *
-     * If the WASM module exports `scope_push` (compiler ≥ 0.30.330,
-     * COMPILER-NO-FREE-EXPORT-LEAKS-WASM-MEMORY follow-up), capture the
-     * `__heap_ptr` snapshot so the matching pop can rewind the bump pointer.
-     * Older modules (no `scope_push` export) fall back to the legacy
-     * per-allocation tracking only.
+     * No-op for WASM heap management per the registry contract; retained as
+     * a stack marker so `mem_scope_pop`'s legacy per-allocation cleanup
+     * still balances. See header comment for why the WASM-side `scope_push`
+     * export is NOT called here.
      */
     mem_scope_push(): void {
-      const state = getState();
-      const scopePush = getScopePush(state.exports);
-      const snapshot = scopePush ? scopePush() : 0;
-      scopeStack.push({ allocations: [], snapshot });
+      scopeStack.push({ allocations: [] });
     },
 
     /**
-     * Pop the current memory scope and release its allocations.
+     * Pop the current memory scope and release its legacy per-`mem_alloc`
+     * allocations.
      *
-     * Two-phase reclaim:
-     *   1. Legacy per-`mem_alloc` ptrs are refcount-decremented and (if the
-     *      module exports `free`) freed individually. Pre-0.30.330 compilers
-     *      relied on this path. On 0.30.330+ `free` is a no-op stub so this
-     *      degrades to bookkeeping cleanup of the JS-side refCounts map.
-     *   2. If the module exports `scope_pop`, hand it the snapshot taken at
-     *      push time. This rewinds the WASM `__heap_ptr` global, reclaiming
-     *      every byte allocated via `__malloc` since the matching push —
-     *      including the string buffers from writeLengthPrefixedString /
-     *      concatLengthPrefixed that don't go through `mem_alloc` and that
-     *      were the actual source of the memory exhaustion in CNS-MEM-…-POP.
+     * Does NOT rewind `__heap_ptr`. The compiler emits these scope brackets
+     * around handler internals expecting them to be advisory — clean-server
+     * treats them as no-ops. The actual per-request heap rewind runs once
+     * per request in workers/request-worker.ts, AFTER response body/headers/
+     * cookies have been materialized as JS strings/objects, so no live WASM
+     * pointer survives the rewind. Rewinding on every internal
+     * `mem_scope_pop` (as prior revisions did) would invalidate pointers the
+     * WASM code still holds — see NODE-SERVER-BRIDGE-OOB-TASKS-FILTER.
      */
     mem_scope_pop(): void {
       const state = getState();
@@ -189,15 +176,6 @@ export function createMemoryRuntimeBridge(getState: () => WasmState) {
           refCounts.delete(ptr);
         } else {
           refCounts.set(ptr, count - 1);
-        }
-      }
-
-      const scopePop = getScopePop(state.exports);
-      if (scopePop && scope.snapshot !== 0) {
-        try {
-          scopePop(scope.snapshot);
-        } catch (err) {
-          log(state, 'MEM', `scope_pop rewind failed for snapshot ${scope.snapshot}`, err);
         }
       }
     },
