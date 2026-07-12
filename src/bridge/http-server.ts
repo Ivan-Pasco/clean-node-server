@@ -1,5 +1,12 @@
 import { WasmState } from '../types';
-import { readString, writeString, log } from './helpers';
+import {
+  readString,
+  readPrefixedString,
+  writeString,
+  readAnyAsString,
+  boxStringAsAny,
+  log,
+} from './helpers';
 import { RouteRegistry } from '../router';
 
 /**
@@ -567,35 +574,55 @@ export function createHttpServerBridge(getState: () => WasmState) {
     },
 
     /**
-     * Extract a value from JSON by dot-path
-     * e.g., _json_get('{"user":{"email":"a@b.com"}}', 'user.email') -> 'a@b.com'
+     * Extract a value from JSON by dot-path — any-in / any-out ABI.
      *
-     * Mirrors clean-server/host-bridge `_json_get`: numeric path parts index
-     * arrays, string path parts access own object keys only. Reaching a
-     * non-traversable value or a missing key returns the empty string — this
-     * is the termination signal for Clean Language loops of the form
+     * ABI (compiler 0.33.55+, frame.server 2.8.4+):
+     *   params  = ["any", "string"]  (expand_strings = false)
+     *   returns = "any"
+     *
+     * The compiler emits a 2-arg WASM import:
+     *   _json_get(any_json_ptr: i32, path_lp_ptr: i32) -> any_result_ptr: i32
+     *
+     * `any` is a pointer to a 12-byte boxed struct laid out as
+     *   [tag@0: i32] [value1@4: i32] [value2@8: i32]
+     * with tag values 0=Null 1=Integer 2=Boolean 3=Number(f64) 4=String 5=List 6=Object
+     * (see clean-language-compiler/src/mir/mir_types.rs::AnyTypeTag). For the
+     * String tag, value1 holds a pointer to a length-prefixed string.
+     *
+     * Path semantics mirror clean-server's Rust _json_get: numeric parts index
+     * arrays, string parts access own object keys only. Missing keys / out-of-
+     * range indices / paths into non-traversable values return the empty string
+     * — the termination signal for Clean Language loops of the form
      * `while title != "" : title = json.get(json, "items." + i.toString() + ".title")`.
      * Returning Array.prototype methods (`length`, `push`, `constructor`, …)
-     * for parts that happen to match would silently make those loops run forever.
+     * would silently make those loops run forever.
+     *
+     * BRIDGE-JSON-GET-INTEGER-RETURNS-POINTER: the pre-fix bridge kept the old
+     * `(jsonPtr, jsonLen, pathPtr, pathLen)` expand_strings=true shape and
+     * returned a raw LP-string pointer. When the compiler subsequently emitted
+     * `raw.toInteger()` after `string raw = json.get(...)`, its `emit_unbox_any(String)`
+     * read `[tag@0]` off the LP-string's 4-byte length prefix and then read
+     * value@4 as the first bytes of the string content reinterpreted as an
+     * i32 — surfacing pointer-shaped values (148296, 148616, …) instead of
+     * the parsed integer. Fixing the ABI here restores the correct value
+     * without any compiler-side change.
      */
-    _json_get(
-      jsonPtr: number,
-      jsonLen: number,
-      pathPtr: number,
-      pathLen: number
-    ): number {
+    _json_get(anyJsonPtr: number, pathLpPtr: number): number {
       const state = getState();
-      const jsonStr = readString(state, jsonPtr, jsonLen);
-      const path = readString(state, pathPtr, pathLen);
+      const jsonStr = readAnyAsString(state, anyJsonPtr);
+      const path = readPrefixedString(state, pathLpPtr);
 
+      let result: string;
       try {
         const parsed = JSON.parse(jsonStr);
         const parts = path.split('.');
         let current: unknown = parsed;
+        let terminated = false;
 
         for (const part of parts) {
           if (current === null || current === undefined) {
-            return writeString(state, '');
+            terminated = true;
+            break;
           }
           if (Array.isArray(current)) {
             // /^\d+$/ matches the integer index forms Clean Language emits via
@@ -604,36 +631,40 @@ export function createHttpServerBridge(getState: () => WasmState) {
             if (/^\d+$/.test(part)) {
               const idx = Number(part);
               if (idx >= current.length) {
-                return writeString(state, '');
+                terminated = true;
+                break;
               }
               current = current[idx];
             } else {
-              return writeString(state, '');
+              terminated = true;
+              break;
             }
           } else if (typeof current === 'object') {
             // Own-key access only — Object.prototype methods (`toString`,
             // `constructor`, …) must not be returned as values.
             if (!Object.prototype.hasOwnProperty.call(current, part)) {
-              return writeString(state, '');
+              terminated = true;
+              break;
             }
             current = (current as Record<string, unknown>)[part];
           } else {
-            return writeString(state, '');
+            terminated = true;
+            break;
           }
         }
 
-        if (current === undefined || current === null) {
-          return writeString(state, '');
+        if (terminated || current === undefined || current === null) {
+          result = '';
+        } else if (typeof current === 'string') {
+          result = current;
+        } else {
+          result = JSON.stringify(current);
         }
-
-        if (typeof current === 'string') {
-          return writeString(state, current);
-        }
-
-        return writeString(state, JSON.stringify(current));
       } catch {
-        return writeString(state, '');
+        result = '';
       }
+
+      return boxStringAsAny(state, result);
     },
   };
 }

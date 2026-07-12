@@ -66,6 +66,31 @@ function writeRawAt(memory: WebAssembly.Memory, ptr: number, str: string): numbe
   return bytes.length;
 }
 
+/**
+ * Box an LP-string pointer as a 12-byte Any struct (tag=4 String).
+ * Mirrors the compiler's `emit_box_any` at the caller side of the
+ * post-0.33.55 _json_get ABI (any_json_ptr, path_lp_ptr) -> any_result_ptr.
+ */
+function boxLpAsAny(state: WasmState, lpPtr: number): number {
+  const anyPtr = state.exports.malloc(12);
+  const view = new DataView(state.exports.memory.buffer);
+  view.setUint32(anyPtr, 4, true);       // tag = String
+  view.setUint32(anyPtr + 4, lpPtr, true);
+  view.setUint32(anyPtr + 8, 0, true);
+  return anyPtr;
+}
+
+/**
+ * Unbox an Any pointer's underlying LP-string pointer (tag=4 String).
+ * Returns 0 for tag=Null (empty).
+ */
+function unboxAnyToLp(memory: WebAssembly.Memory, anyPtr: number): number {
+  const view = new DataView(memory.buffer);
+  const tag = view.getUint32(anyPtr, true);
+  if (tag === 0) return 0; // Null → empty
+  return view.getUint32(anyPtr + 4, true);
+}
+
 describe('UTF-8 round-trip contract — NSR002 regression pin', () => {
   let memory: WebAssembly.Memory;
   let state: WasmState;
@@ -88,19 +113,21 @@ describe('UTF-8 round-trip contract — NSR002 regression pin', () => {
   });
 
   describe('_json_get preserves multibyte UTF-8 from any path depth', () => {
+    // ABI update (compiler 0.33.55+, frame.server 2.8.4+): _json_get takes
+    // (any_json_ptr, path_lp_ptr) and returns a boxed-Any result. Callers box
+    // their JSON input via emit_box_any and unbox the return via
+    // emit_unbox_any(String) — mirrored by the test helpers above.
     it.each(MULTIBYTE_CORPUS)('round-trips %s through nested JSON', (str) => {
       const dbResult = { ok: true, data: { rows: [{ title: str }], count: 1 } };
-      const jsonStr = JSON.stringify(dbResult);
-      const jsonLp = writeLengthPrefixedString(state.exports as never, jsonStr);
-      const jsonView = new DataView(memory.buffer);
-      const jsonLen = jsonView.getUint32(jsonLp, true);
-      const jsonPtr = jsonLp + 4;
+      const jsonLp = writeLengthPrefixedString(
+        state.exports as never,
+        JSON.stringify(dbResult),
+      );
+      const anyJson = boxLpAsAny(state, jsonLp);
+      const pathLp = writeLengthPrefixedString(state.exports as never, 'data.rows.0.title');
 
-      const path = 'data.rows.0.title';
-      const pathPtr = 32;
-      const pathLen = writeRawAt(memory, pathPtr, path);
-
-      const titleLp = bridge._json_get(jsonPtr, jsonLen, pathPtr, pathLen);
+      const anyTitle = bridge._json_get(anyJson, pathLp);
+      const titleLp = unboxAnyToLp(memory, anyTitle);
       expect(readLengthPrefixedString(memory, titleLp)).toBe(str);
     });
   });
@@ -135,14 +162,12 @@ describe('UTF-8 round-trip contract — NSR002 regression pin', () => {
       state.exports as never,
       JSON.stringify(dbResult),
     );
-    const view = new DataView(memory.buffer);
-    const jsonLen = view.getUint32(jsonLp, true);
+    const anyJson = boxLpAsAny(state, jsonLp);
+    const pathLp = writeLengthPrefixedString(state.exports as never, 'data.rows.0.title');
 
-    const pathPtr = 32;
-    const pathLen = writeRawAt(memory, pathPtr, 'data.rows.0.title');
-
-    const titleLp = bridge._json_get(jsonLp + 4, jsonLen, pathPtr, pathLen);
-    const titleLen = view.getUint32(titleLp, true);
+    const anyTitle = bridge._json_get(anyJson, pathLp);
+    const titleLp = unboxAnyToLp(memory, anyTitle);
+    const titleLen = new DataView(memory.buffer).getUint32(titleLp, true);
 
     const ctPtr = 16;
     const ctLen = writeRawAt(memory, ctPtr, 'text/plain');
@@ -162,15 +187,17 @@ describe('UTF-8 round-trip contract — NSR002 regression pin', () => {
       state.exports as never,
       JSON.stringify(dbResult),
     );
-    const view = new DataView(memory.buffer);
-    const jsonLen = view.getUint32(jsonLp, true);
+    const anyJson = boxLpAsAny(state, jsonLp);
 
     const decoded: string[] = [];
     for (let i = 0; i < 30; i++) {
-      const pathPtr = 32;
-      const pathLen = writeRawAt(memory, pathPtr, `data.rows.${i}.title`);
-      const lp = bridge._json_get(jsonLp + 4, jsonLen, pathPtr, pathLen);
-      decoded.push(readLengthPrefixedString(memory, lp));
+      const pathLp = writeLengthPrefixedString(
+        state.exports as never,
+        `data.rows.${i}.title`,
+      );
+      const anyTitle = bridge._json_get(anyJson, pathLp);
+      const lp = unboxAnyToLp(memory, anyTitle);
+      decoded.push(lp === 0 ? '' : readLengthPrefixedString(memory, lp));
     }
 
     for (let i = 0; i < 30; i++) {
@@ -178,10 +205,15 @@ describe('UTF-8 round-trip contract — NSR002 regression pin', () => {
       expect(decoded[i]).not.toMatch(/�/);
     }
 
-    // Out-of-bounds index must return empty, which is the loop termination signal.
-    const pathPtr = 32;
-    const pathLen = writeRawAt(memory, pathPtr, 'data.rows.30.title');
-    const sentinelLp = bridge._json_get(jsonLp + 4, jsonLen, pathPtr, pathLen);
-    expect(readLengthPrefixedString(memory, sentinelLp)).toBe('');
+    // Out-of-bounds index must return an Any whose underlying string is empty
+    // — the loop termination signal for `while title != ""`.
+    const sentinelPathLp = writeLengthPrefixedString(
+      state.exports as never,
+      'data.rows.30.title',
+    );
+    const anySentinel = bridge._json_get(anyJson, sentinelPathLp);
+    const sentinelLp = unboxAnyToLp(memory, anySentinel);
+    const sentinelStr = sentinelLp === 0 ? '' : readLengthPrefixedString(memory, sentinelLp);
+    expect(sentinelStr).toBe('');
   });
 });

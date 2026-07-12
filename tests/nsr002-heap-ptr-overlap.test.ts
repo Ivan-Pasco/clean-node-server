@@ -38,6 +38,7 @@ import { createHttpServerBridge } from '../src/bridge/http-server';
 import {
   readLengthPrefixedString,
   writeLengthPrefixedString,
+  bumpHeapPtr,
 } from '../src/wasm/memory';
 import type { WasmState, WasmResponse } from '../src/types';
 
@@ -138,12 +139,17 @@ describe('NSR002 — bridge must bump __heap_ptr to prevent allocator overlap', 
   it('_json_get → string.concat chain (the prod /tutorials 30-card pattern)', () => {
     // The actual render loop: query DB → JSON, then `iterate item in items`
     // pulling fields via _json_get and concatenating into an HTML accumulator.
-    // Each _json_get call returns a fresh LP-string pointer; each concat
-    // appends it to acc. Without the heap-ptr bump, the json result's bytes
-    // get overwritten by the NEXT _json_get before the concat reads them,
+    // Each _json_get call returns a fresh boxed-Any pointer (12-byte struct
+    // with tag=4 String, value1 = LP-string ptr); the caller unboxes to a
+    // string LP-ptr before feeding it into string.concat. Without the heap-ptr
+    // bump, either the Any envelope OR the underlying LP-string can be
+    // overwritten by the NEXT _json_get before the concat reads them,
     // producing a length-prefix corruption that surfaces as a WASM OOB trap
-    // when the compiler-emitted accumulator tries to walk the corrupted
-    // length.
+    // when the compiler-emitted accumulator tries to walk the corrupted length.
+    //
+    // ABI change (compiler 0.33.55+, frame.server 2.8.4+): _json_get is now
+    // (any_json_ptr, path_lp_ptr) -> any_result_ptr. See BRIDGE-JSON-GET-
+    // INTEGER-RETURNS-POINTER for the migration rationale.
     const httpBridge = createHttpServerBridge(() => state);
     const stringBridge = createStringBridge(() => state);
 
@@ -152,18 +158,33 @@ describe('NSR002 — bridge must bump __heap_ptr to prevent allocator overlap', 
       slug: `slug-${i}`,
     }));
     const dbResult = { ok: true, data: { rows: items, count: items.length } };
-    const jsonLp = writeLengthPrefixedString(state.exports, JSON.stringify(dbResult));
-    const jsonLen = new DataView(memory.buffer).getUint32(jsonLp, true);
+
+    // Box the DB-result JSON string as an Any (tag=4 String, value1=lp-ptr) —
+    // this is what the compiler's `emit_box_any` produces at the call site.
+    // The bumpHeapPtr call after the malloc is critical under this test's
+    // deliberately-stale __heap_ptr fixture: without it the very next
+    // writeLengthPrefixedString would re-issue the same address and clobber
+    // the envelope we just wrote.
+    const dbLp = writeLengthPrefixedString(state.exports, JSON.stringify(dbResult));
+    const anyJson = state.exports.malloc(12);
+    {
+      const view = new DataView(memory.buffer);
+      view.setUint32(anyJson, 4, true);      // tag = String
+      view.setUint32(anyJson + 4, dbLp, true);
+      view.setUint32(anyJson + 8, 0, true);
+      bumpHeapPtr(state.exports, anyJson, 12);
+    }
 
     let acc = writeLengthPrefixedString(state.exports, '');
     for (let i = 0; i < 30; i++) {
       const titlePath = `data.rows.${i}.title`;
-      // _json_get uses raw ptr+len convention per the registry.
-      // Allocate the path string via the bridge to share the same allocator.
       const pathLp = writeLengthPrefixedString(state.exports, titlePath);
-      const pathLen = new DataView(memory.buffer).getUint32(pathLp, true);
 
-      const titleLp = httpBridge._json_get(jsonLp + 4, jsonLen, pathLp + 4, pathLen);
+      const anyTitle = httpBridge._json_get(anyJson, pathLp);
+      // Unbox the returned Any to its underlying LP-string ptr, which is what
+      // string.concat expects (LP-pointer calling convention).
+      const view = new DataView(memory.buffer);
+      const titleLp = view.getUint32(anyTitle + 4, true);
       acc = stringBridge['string.concat'](acc, titleLp);
 
       // The accumulator's tail must be the title we just appended — if a

@@ -3,7 +3,23 @@ import {
   readRawString,
   readLengthPrefixedString,
   writeLengthPrefixedString,
+  bumpHeapPtr,
 } from '../wasm/memory';
+
+/**
+ * Boxed-Any layout emitted by the compiler's `emit_box_any` (see
+ * clean-language-compiler/src/codegen/mir_codegen/instructions.rs::emit_box_value):
+ *   [tag@0: i32] [value1@4: i32] [value2@8: i32]
+ * Total size 12 bytes. See AnyTypeTag in mir_types.rs for tag values.
+ */
+export const ANY_STRUCT_SIZE = 12;
+export const ANY_TAG_NULL = 0;
+export const ANY_TAG_INTEGER = 1;
+export const ANY_TAG_BOOLEAN = 2;
+export const ANY_TAG_NUMBER = 3;
+export const ANY_TAG_STRING = 4;
+export const ANY_TAG_LIST = 5;
+export const ANY_TAG_OBJECT = 6;
 
 /**
  * Helper to read a string from WASM memory using ptr and len
@@ -93,6 +109,69 @@ export function createStringBridge(
     }
     return result;
   };
+}
+
+/**
+ * Read the underlying string value from a boxed-Any pointer.
+ *
+ * The compiler's stdlib `json.get(any, string) -> any` boxes its first
+ * argument (typically a raw SQL result string or an already-boxed JSON) via
+ * `emit_box_any` before invoking the bridge, so `anyPtr` points to the 12-byte
+ * struct laid out as `[tag@0][value1@4][value2@8]`.
+ *
+ * Supported tag paths for `_json_get`'s first argument:
+ *   - String (4): value1 is an LP-string pointer, read it.
+ *   - Null   (0): treat as empty string.
+ *
+ * Other tags fall through to `String(value1)` — this is defensive; the
+ * compiler is expected to only box String / Object here (Object gets JSON-
+ * encoded upstream, at which point it flows through the String path).
+ */
+export function readAnyAsString(state: WasmState, anyPtr: number): string {
+  if (anyPtr === 0) return '';
+  const view = new DataView(state.exports.memory.buffer);
+  const tag = view.getUint32(anyPtr, true);
+  if (tag === ANY_TAG_NULL) return '';
+  if (tag === ANY_TAG_STRING) {
+    const lpPtr = view.getUint32(anyPtr + 4, true);
+    return readLengthPrefixedString(state.exports.memory, lpPtr);
+  }
+  // Defensive fallback: read value1 as an LP-string pointer even for other tags.
+  // The compiler currently boxes json.get's first argument as String; if it
+  // ever emits a different tag, treating value1 as an LP-ptr will either read
+  // the correct bytes or trap in readLengthPrefixedString with a diagnosis.
+  const lpPtr = view.getUint32(anyPtr + 4, true);
+  return readLengthPrefixedString(state.exports.memory, lpPtr);
+}
+
+/**
+ * Allocate a fresh 12-byte boxed-Any struct with tag=String and value1 pointing
+ * at an LP-string of `str`. Returns the pointer to the struct.
+ *
+ * Two allocations happen: one for the LP-string (via `writeString`), one for
+ * the Any envelope (via `malloc`). Both must bump `__heap_ptr` past their end
+ * so the next allocator call (WASM-side or bridge-side) doesn't overlap them —
+ * same guard applied by all other multi-allocation bridge helpers
+ * (concatLengthPrefixed, string_split, mem_alloc).
+ */
+export function boxStringAsAny(state: WasmState, str: string): number {
+  const lpPtr = writeLengthPrefixedString(state.exports, str);
+  const anyPtr = state.exports.malloc(ANY_STRUCT_SIZE);
+  if (anyPtr === 0) {
+    const bufferMB = (state.exports.memory.buffer.byteLength / 1024 / 1024).toFixed(1);
+    throw new Error(
+      `WASM malloc returned null in boxStringAsAny: need ${ANY_STRUCT_SIZE} bytes, ` +
+      `buffer is ${bufferMB} MB.`,
+    );
+  }
+  // Snap buffer AFTER malloc — malloc may have grown WASM memory and detached
+  // the previous ArrayBuffer.
+  const view = new DataView(state.exports.memory.buffer);
+  view.setUint32(anyPtr, ANY_TAG_STRING, true);
+  view.setUint32(anyPtr + 4, lpPtr, true);
+  view.setUint32(anyPtr + 8, 0, true);
+  bumpHeapPtr(state.exports, anyPtr, ANY_STRUCT_SIZE);
+  return anyPtr;
 }
 
 /**

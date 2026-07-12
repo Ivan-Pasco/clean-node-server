@@ -107,20 +107,34 @@ function callDbQuery(
   );
 }
 
+/**
+ * Call _json_get using the compiler 0.33.55+ / frame.server 2.8.4+ ABI:
+ *   (any_json_ptr, path_lp_ptr) -> any_result_ptr
+ *
+ * `sourceLp` is the LP-string pointer returned by `_db_query`; we box it here
+ * as an Any (tag=4 String) the same way the compiler's `emit_box_any` would at
+ * the caller side. Returns the LP-string pointer for the underlying result
+ * (unboxing the Any envelope), or 0 for Null. Callers pass the returned LP-ptr
+ * straight into `readLengthPrefixedString` / `string.concat` as before.
+ */
 function callJsonGet(
   bridge: ReturnType<typeof createHttpServerBridge>,
   state: WasmState,
   sourceLp: number,
   path: string,
 ): number {
+  const anyJson = state.exports.malloc(12);
   const view = new DataView(state.exports.memory.buffer);
-  const sourceLen = sourceLp === 0 ? 0 : view.getUint32(sourceLp, true);
+  view.setUint32(anyJson, 4, true);         // tag = String
+  view.setUint32(anyJson + 4, sourceLp, true);
+  view.setUint32(anyJson + 8, 0, true);
   const pathLp = writeLengthPrefixedString(state.exports, path);
-  const pathLen = new DataView(state.exports.memory.buffer).getUint32(pathLp, true);
-  return (bridge as any)._json_get(
-    sourceLp + 4, sourceLen,
-    pathLp + 4, pathLen,
-  );
+  const anyResult = (bridge as any)._json_get(anyJson, pathLp);
+  if (anyResult === 0) return 0;
+  const resultView = new DataView(state.exports.memory.buffer);
+  const tag = resultView.getUint32(anyResult, true);
+  if (tag === 0) return 0;
+  return resultView.getUint32(anyResult + 4, true);
 }
 
 describe('NODE-SERVER-BRIDGE-OOB-TASKS-FILTER — bridge-level regression harness', () => {
