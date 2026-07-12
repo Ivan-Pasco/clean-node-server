@@ -14,34 +14,56 @@ function getNestedValue(data: unknown, path: string): unknown {
   return current;
 }
 
+/**
+ * Substitute `{ key }` single-brace placeholders per HOST_BRIDGE.md.
+ *
+ * Rules:
+ * - `{key}`, `{ key }`, `{   key   }` — all match; internal whitespace tolerated.
+ * - Dotted paths (`{ user.name }`) resolved against `data`; missing → empty string.
+ * - `{{` emits a literal `{`; `}}` emits a literal `}`. Escapes prevent substitution.
+ * - Braces containing newlines, nested braces, or empty content are left literal.
+ * - Unterminated `{` (no matching `}`) is left literal.
+ */
 function substituteTemplate(template: string, data: unknown): string {
   let result = '';
-  let rest = template;
-  while (rest.length > 0) {
-    const open = rest.indexOf('{{');
-    if (open === -1) {
-      result += rest;
-      break;
-    }
-    result += rest.slice(0, open);
-    const afterOpen = rest.slice(open + 2);
-    const close = afterOpen.indexOf('}}');
-    if (close === -1) {
-      result += '{{' + afterOpen;
-      break;
-    }
-    const rawKey = afterOpen.slice(0, close);
-    const key = rawKey.trim();
-    if (key.length === 0 || /[{}\n\r]/.test(key)) {
-      result += '{{';
-      rest = afterOpen;
+  let i = 0;
+  while (i < template.length) {
+    const ch = template[i];
+    if (ch === '{') {
+      if (template[i + 1] === '{') {
+        result += '{';
+        i += 2;
+        continue;
+      }
+      const close = template.indexOf('}', i + 1);
+      if (close === -1) {
+        result += template.slice(i);
+        break;
+      }
+      const rawKey = template.slice(i + 1, close);
+      const key = rawKey.trim();
+      // Valid key: identifier chars and dotted paths only. Anything else
+      // (whitespace inside, colons, CSS selectors, JSON bodies, newlines,
+      // nested braces) is not a placeholder — leave the `{` literal.
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$/.test(key)) {
+        result += ch;
+        i += 1;
+        continue;
+      }
+      const value = getNestedValue(data, key);
+      if (value !== undefined && value !== null) {
+        result += String(value);
+      }
+      i = close + 1;
       continue;
     }
-    const value = getNestedValue(data, key);
-    if (value !== undefined && value !== null) {
-      result += String(value);
+    if (ch === '}' && template[i + 1] === '}') {
+      result += '}';
+      i += 2;
+      continue;
     }
-    rest = afterOpen.slice(close + 2);
+    result += ch;
+    i += 1;
   }
   return result;
 }
@@ -693,15 +715,18 @@ export function createUiBridge(getState: () => WasmState) {
     },
 
     /**
-     * Render an HTML template with `{{ key }}` substitution. Caller provides the
-     * full relative path from project root (e.g. "app/ui/pages/index.html").
-     * Path construction is the caller's responsibility.
+     * Render an HTML template with `{ key }` single-brace substitution. Caller
+     * provides the full relative path from project root
+     * (e.g. "app/ui/pages/index.html"). Path construction is the caller's
+     * responsibility.
      *
-     * Internal whitespace inside the braces is tolerated (`{{key}}`, `{{ key }}`,
-     * `{{   key   }}` all match). Dotted paths (`{{ user.name }}`) are resolved
-     * against the JSON data. Missing keys produce an empty string. Single-brace
-     * `{key}` is left untouched — reserved for the cl-iterate directive. See
-     * HOST_BRIDGE.md `_ui_render_page` and function-registry.toml.
+     * Internal whitespace inside the braces is tolerated (`{key}`, `{ key }`,
+     * `{   key   }` all match). Dotted paths (`{ user.name }`) are resolved
+     * against the JSON data. Missing keys produce an empty string. Literal
+     * braces are escaped as `{{` → `{` and `}}` → `}`. cl-iterate expands its
+     * body first, so its scoped `{item}` / `{item.field}` placeholders are
+     * resolved per-iteration before the top-level pass. See HOST_BRIDGE.md
+     * `_ui_render_page` and function-registry.toml.
      *
      * Returns the rendered HTML as a length-prefixed string pointer, or an empty
      * string on error.
@@ -748,12 +773,17 @@ export function createUiBridge(getState: () => WasmState) {
         }
       }
 
-      const substituted = substituteTemplate(template, data);
+      // Directives run FIRST so cl-iterate can substitute its own scoped
+      // `{item}` / `{item.field}` placeholders per-iteration. substituteTemplate
+      // then runs on the expanded template with the top-level data — any
+      // remaining `{key}` tokens resolve against `data`, and missing keys
+      // collapse to empty string per HOST_BRIDGE.md.
+      const withDirectives = processDirectives(template, data);
 
-      const withDirectives = processDirectives(substituted, data);
+      const substituted = substituteTemplate(withDirectives, data);
 
       const registry = state.componentRegistry ?? new Map<string, string>();
-      const withComponents = expandComponentTags(withDirectives, registry);
+      const withComponents = expandComponentTags(substituted, registry);
 
       const rendered = injectLoaderScript(withComponents);
 

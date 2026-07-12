@@ -1,16 +1,15 @@
 /**
  * _ui_render_page — template substitution contract tests.
  *
- * The spec at HOST_BRIDGE.md line 404 and function-registry.toml line 2647 mandates
- * `{{ key }}` substitution with internal whitespace tolerated and missing keys
- * collapsing to empty string. This matches the clean-server (Rust) sibling host,
- * which rewrote substitute_template as a single-pass `{{ … }}` scanner in v1.9.57.
+ * Spec (HOST_BRIDGE.md line 419, frame.ui plugin.toml, ssr-page-with-islands
+ * pattern): substitution uses single-brace `{ key }` with internal whitespace
+ * tolerated. Dotted paths resolve against JSON data; missing keys collapse
+ * to empty string. Literal braces are emitted with `{{` → `{` and `}}` → `}`.
  *
- * Bug NODE-SERVER-UI-RENDER-PAGE-INTERP-STRICT-WHITESPACE (fp ccafd1f2c004): the
- * previous regex `/\{([\w.]+)\}/g` only matched single-brace `{key}` with no
- * internal whitespace, so spec-compliant `{{ key }}` templates rendered literal
- * placeholder text. Single-brace `{key}` matching is also wrong because it
- * collides with the cl-iterate directive's `{item.field}` placeholders.
+ * Bug NODE-SERVER-UI-RENDER-PAGE-NO-SUBSTITUTION (fp 25fc3e8a23…): the previous
+ * implementation used double-brace `{{ key }}`, which meant every companion
+ * page served raw templates because frame.ui's compiler-emitted templates use
+ * single-brace. Fixed in v0.1.89 by aligning with HOST_BRIDGE.md.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -44,7 +43,7 @@ function makeMockState(memory: WebAssembly.Memory, heapStart: number, projectRoo
   } as unknown as WasmState;
 }
 
-describe('_ui_render_page — {{ key }} substitution (NODE-SERVER-UI-RENDER-PAGE-INTERP-STRICT-WHITESPACE)', () => {
+describe('_ui_render_page — { key } substitution (NODE-SERVER-UI-RENDER-PAGE-NO-SUBSTITUTION)', () => {
   let tmpDir: string;
   let memory: WebAssembly.Memory;
   let state: WasmState;
@@ -79,58 +78,78 @@ describe('_ui_render_page — {{ key }} substitution (NODE-SERVER-UI-RENDER-PAGE
     return readLengthPrefixedString(memory, resultPtr);
   }
 
-  it('substitutes `{{ key }}` with internal whitespace (spec form)', () => {
-    writePage('hello.html', '<h1>{{ greeting }}</h1>');
+  it('substitutes `{ key }` with internal whitespace (spec form)', () => {
+    writePage('hello.html', '<h1>{ greeting }</h1>');
     expect(render('hello.html', { greeting: 'Hello world' })).toBe('<h1>Hello world</h1>');
   });
 
-  it('substitutes `{{key}}` with no whitespace', () => {
-    writePage('hello.html', '<h1>{{greeting}}</h1>');
+  it('substitutes `{key}` with no whitespace', () => {
+    writePage('hello.html', '<h1>{greeting}</h1>');
     expect(render('hello.html', { greeting: 'Hi' })).toBe('<h1>Hi</h1>');
   });
 
-  it('substitutes `{{   key   }}` with extra whitespace', () => {
-    writePage('hello.html', '[{{   key   }}]');
+  it('substitutes `{   key   }` with extra whitespace', () => {
+    writePage('hello.html', '[{   key   }]');
     expect(render('hello.html', { key: 'value' })).toBe('[value]');
   });
 
   it('substitutes missing keys with empty string', () => {
-    writePage('hello.html', 'a{{ missing }}b');
+    writePage('hello.html', 'a{ missing }b');
     expect(render('hello.html', { other: 'x' })).toBe('ab');
   });
 
-  it('substitutes dotted paths (`{{ user.name }}`)', () => {
-    writePage('hello.html', '<p>Hello, {{ user.name }}!</p>');
+  it('substitutes dotted paths (`{ user.name }`)', () => {
+    writePage('hello.html', '<p>Hello, { user.name }!</p>');
     expect(render('hello.html', { user: { name: 'Ada' } })).toBe('<p>Hello, Ada!</p>');
   });
 
-  it('does NOT substitute single-brace `{key}` (reserved for cl-iterate)', () => {
-    writePage('hello.html', '<li>{name}</li>');
-    expect(render('hello.html', { name: 'Ada' })).toBe('<li>{name}</li>');
-  });
-
   it('renders multiple placeholders in one template', () => {
-    writePage('hello.html', '<h1>Hello, {{ name }}!</h1><p>You are {{ role }}.</p>');
+    writePage('hello.html', '<h1>Hello, { name }!</h1><p>You are { role }.</p>');
     expect(render('hello.html', { name: 'Ada', role: 'admin' })).toBe(
       '<h1>Hello, Ada!</h1><p>You are admin.</p>'
     );
   });
 
-  it('renders null and number values', () => {
-    writePage('hello.html', '[{{ a }}][{{ b }}][{{ c }}]');
+  it('renders null and number values (null → empty, numbers/booleans → toString)', () => {
+    writePage('hello.html', '[{ a }][{ b }][{ c }]');
     expect(render('hello.html', { a: null, b: 42, c: true })).toBe('[][42][true]');
   });
 
-  it('leaves an unterminated `{{` as literal text', () => {
-    writePage('hello.html', 'before {{ never_closed');
-    expect(render('hello.html', { x: 'y' })).toBe('before {{ never_closed');
+  it('leaves an unterminated `{` as literal text', () => {
+    writePage('hello.html', 'before { never_closed');
+    expect(render('hello.html', { x: 'y' })).toBe('before { never_closed');
   });
 
-  it('cl-iterate `{item.field}` placeholders survive substitute_template', () => {
-    // substitute_template runs first; the iterate directive then expands the inner
-    // template. If substitute_template consumed `{item.title}` as a top-level key
-    // miss, the iterate body would be blank. processIterateDirective replaces the
-    // host element with its expanded inner content (no wrapper preserved).
+  it('escapes literal braces: `{{` → `{`, `}}` → `}`', () => {
+    writePage('hello.html', 'css: .cls {{ color: red; }}');
+    expect(render('hello.html', {})).toBe('css: .cls { color: red; }');
+  });
+
+  it('escapes do not consume adjacent placeholders', () => {
+    writePage('hello.html', '{{ name: { name } }}');
+    expect(render('hello.html', { name: 'Ada' })).toBe('{ name: Ada }');
+  });
+
+  it('leaves braces spanning newlines as literal (not a placeholder)', () => {
+    writePage('hello.html', '<style>.x {\n  color: red;\n}</style>');
+    expect(render('hello.html', {})).toBe('<style>.x {\n  color: red;\n}</style>');
+  });
+
+  it('renders the reproducer from the bug report (index.html with lang/title/heading)', () => {
+    // Reduced version of the reproducer in bug fp 25fc3e8a23…
+    writePage(
+      'index.html',
+      '<!DOCTYPE html>\n<html lang="{ lang }">\n<head><title>{ title }</title></head>\n<body><h1>{ heading }</h1></body>\n</html>\n'
+    );
+    const out = render('index.html', { lang: 'en', title: 'Home', heading: 'Hello world' });
+    expect(out).toBe(
+      '<!DOCTYPE html>\n<html lang="en">\n<head><title>Home</title></head>\n<body><h1>Hello world</h1></body>\n</html>\n'
+    );
+  });
+
+  it('cl-iterate expands scoped `{item.field}` placeholders per-iteration', () => {
+    // Directives run BEFORE top-level substitution. The iterate directive
+    // replaces its host element with the expanded body (no wrapper preserved).
     writePage(
       'list.html',
       '<ul><span cl-iterate="item in items">[{item.title}]</span></ul>'
@@ -139,8 +158,20 @@ describe('_ui_render_page — {{ key }} substitution (NODE-SERVER-UI-RENDER-PAGE
     expect(out).toBe('<ul>[one][two]</ul>');
   });
 
+  it('cl-iterate + top-level placeholders coexist', () => {
+    // Note: cl-iterate replaces the host element with its expanded inner
+    // content (the wrapper tag is not preserved) — matches the existing
+    // contract for the sibling `[{item.title}]` test above.
+    writePage(
+      'list.html',
+      '<h1>{ title }</h1><ul><span cl-iterate="item in items">[{item}]</span></ul>'
+    );
+    const out = render('list.html', { title: 'Fruits', items: ['apple', 'pear'] });
+    expect(out).toBe('<h1>Fruits</h1><ul>[apple][pear]</ul>');
+  });
+
   it('still blocks path traversal', () => {
-    writePage('hello.html', '<h1>{{ x }}</h1>');
+    writePage('hello.html', '<h1>{ x }</h1>');
     expect(render('../etc/passwd', { x: 'pwn' })).toBe('');
   });
 });
