@@ -40,14 +40,24 @@ function makeMockState(memory?: WebAssembly.Memory, heapStart = 65_536): WasmSta
 }
 
 // ─── Helpers to inject pre-populated arrays directly into the store ──────────
+//
+// injectArray reserves handles in a range far above the module's internal
+// nextHandle counter, so that new arrays created by the bridge (e.g. via
+// array_slice → storeArray) never collide with injected handles. The
+// module's nextHandle starts at 1 after resetArrayStore(), and every
+// bridge op that mints a handle only advances it by 1, so 10_000+ is
+// safely out of the way for any realistic test size.
+
+const INJECTED_BASE = 10_000;
+let injectedCursor = INJECTED_BASE;
+
+function resetInjectedCursor(): void {
+  injectedCursor = INJECTED_BASE;
+}
 
 function injectArray(arr: unknown[]): number {
   const store = getArrayStore();
-  // find the highest handle and assign the next one
-  let handle = 1;
-  for (const k of store.keys()) {
-    if (k >= handle) handle = k + 1;
-  }
+  const handle = injectedCursor++;
   store.set(handle, arr);
   return handle;
 }
@@ -57,6 +67,7 @@ function injectArray(arr: unknown[]): number {
 describe('Array bridge — reset and isolation', () => {
   beforeEach(() => {
     resetArrayStore();
+    resetInjectedCursor();
   });
 
   it('resetArrayStore clears all handles and resets counter', () => {
@@ -83,6 +94,7 @@ describe('Array bridge — reset and isolation', () => {
 describe('Array bridge — get / set / push / pop', () => {
   beforeEach(() => {
     resetArrayStore();
+    resetInjectedCursor();
   });
 
   it('array_get returns correct element and 0 for out-of-range index', () => {
@@ -143,6 +155,7 @@ describe('Array bridge — get / set / push / pop', () => {
 describe('Array bridge — slice / concat / reverse / sort', () => {
   beforeEach(() => {
     resetArrayStore();
+    resetInjectedCursor();
   });
 
   it('array_slice returns new handle with subrange', () => {
@@ -196,6 +209,7 @@ describe('Array bridge — slice / concat / reverse / sort', () => {
 describe('Array bridge — contains / filter / map / reduce (no WASM table)', () => {
   beforeEach(() => {
     resetArrayStore();
+    resetInjectedCursor();
   });
 
   it('array_contains returns 1 when value present, 0 when absent', () => {
