@@ -245,6 +245,73 @@ describe('NODE-SERVER-BRIDGE-OOB-TASKS-FILTER — bridge-level regression harnes
     expect(readLengthPrefixedString(memory, okPtr)).toBe('false');
   });
 
+  it('RUNTIME-INT-VALUES-ARE-POINTERS-STATS-STRIP: repeated db.query→json.get→string leaf yields exact digits, not pointer-shaped values', () => {
+    // Reporter's minimal repro (RUNTIME-INT-VALUES-ARE-POINTERS-STATS-STRIP,
+    // filed against 0.1.87): `count_and_return` called twice in the same
+    // request produced n = 148296 then n = 148616 (delta = 320, the size of an
+    // internal row-slot descriptor) instead of the parsed integer.
+    //
+    // Root cause (fixed in b14f101, shipped in 0.1.88): _json_get used to
+    // return a raw LP-string pointer under an any-in/lp-out ABI. The compiler
+    // then read tag@0 off the LP header and value@4 as pointer bytes, hence
+    // the +320-stride pointer-shaped values.
+    //
+    // What this test pins end-to-end (through _db_query, not a hand-rolled
+    // JSON literal like tests/json-get-bridge.test.ts):
+    //   1. The LP-string emerging from _json_get contains the exact digits
+    //      ("7") — a caller doing raw.toInteger() has correct input to parse.
+    //   2. Two identical count_and_return calls in the same "request" yield
+    //      strings that parse to equal integers (the +320-stride would show
+    //      up as a numeric delta).
+    //   3. The result pointer's LP header does not decode to a pointer-shaped
+    //      magnitude (small length, e.g. 1 for "7").
+    const memory = new WebAssembly.Memory({ initial: 4 });
+    const driver: Partial<DatabaseDriver> = {
+      querySync(sql: string): DbResult {
+        // The reporter used `SELECT CAST(COUNT(*) AS CHAR) AS total FROM tasks`
+        // which MySQL returns as a numeric string. Mirror that shape.
+        expect(sql).toMatch(/COUNT/i);
+        return { ok: true, data: { rows: [{ total: '7' }], count: 1 } };
+      },
+    };
+    const state = makeState(memory, driver as DatabaseDriver);
+    const dbBridge = createDatabaseBridge(() => state);
+    const httpBridge = createHttpServerBridge(() => state);
+
+    const sql = 'SELECT CAST(COUNT(*) AS CHAR) AS total FROM tasks';
+
+    // First call.
+    const resultA = callDbQuery(dbBridge, state, sql, '');
+    const rawALp = callJsonGet(httpBridge, state, resultA, 'data.rows.0.total');
+    expect(rawALp).toBeGreaterThan(0);
+    const rawA = readLengthPrefixedString(memory, rawALp);
+    expect(rawA).toBe('7');
+    const parsedA = Number.parseInt(rawA, 10);
+    expect(parsedA).toBe(7);
+    // The pre-fix symptom: 148296-shaped values. Assert we're nowhere near
+    // that magnitude — a real "7" parses to 7.
+    expect(parsedA).toBeLessThan(1000);
+
+    // Second call — same source, same DB, same path. In the pre-fix world
+    // this produced 148616 (delta 320 from the first call).
+    const resultB = callDbQuery(dbBridge, state, sql, '');
+    const rawBLp = callJsonGet(httpBridge, state, resultB, 'data.rows.0.total');
+    const rawB = readLengthPrefixedString(memory, rawBLp);
+    expect(rawB).toBe('7');
+    const parsedB = Number.parseInt(rawB, 10);
+    expect(parsedB).toBe(7);
+
+    // Delta must be zero. A non-zero delta that's a multiple of a small
+    // record-slot stride (e.g. 320) is the diagnostic signature of the
+    // pre-fix bug reappearing.
+    expect(parsedB - parsedA).toBe(0);
+
+    // Extra safety: the LP-header length prefix at rawBLp should be 1
+    // (the length of "7"), not a pointer-shaped magnitude.
+    const headerLen = new DataView(memory.buffer).getUint32(rawBLp, true);
+    expect(headerLen).toBe(1);
+  });
+
   it('sequential _db_query responses do not overlap', () => {
     const memory = new WebAssembly.Memory({ initial: 2 });
     let call = 0;
