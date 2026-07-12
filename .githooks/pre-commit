@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+#
+# pre-commit — Tier 0 (policy) + Tier 1 (unit) gate.
+#
+# Runs the fast test-policy guard first (sub-second), then the unit-tier
+# vitest suite (target: <5s wall clock). Blocks the commit if either fails.
+#
+# See system-documents/test-strategy.md for the tier definitions.
+#
+# Skip in emergencies with:  git commit --no-verify
+# (Do this only when the failure is clearly unrelated — CI will still catch it.)
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "▶ pre-commit: test-policy guard"
+node scripts/check-test-policy.mjs
+
+# Only run vitest if tests/ or src/ actually has staged changes — skip on
+# doc-only or config-only commits to keep the hook feeling instant.
+if git diff --cached --name-only | grep -qE '^(src/|tests/|scripts/check-test-policy|vitest\.config|package\.json)'; then
+  echo "▶ pre-commit: Tier-1 unit tests"
+  npm run --silent test:unit
+else
+  echo "▶ pre-commit: no code changes staged — skipping Tier-1"
+fi
+
+echo "✓ pre-commit: OK"

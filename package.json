@@ -1,6 +1,6 @@
 {
   "name": "@ivan-pasco/clean-node-server",
-  "version": "0.1.90",
+  "version": "0.1.91",
   "description": "Node.js host bridge for Clean Language WASM modules",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -13,8 +13,17 @@
     "dev": "ts-node src/index.ts",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:policy": "node scripts/check-test-policy.mjs",
+    "test:unit": "vitest run tests/router.test.ts tests/locale.test.ts tests/memory.test.ts tests/int64-to-string.test.ts tests/math-bridge.test.ts tests/list-bridge.test.ts tests/array-bridge.test.ts tests/console-bridge.test.ts tests/mcp-bridge.test.ts",
+    "test:contract": "vitest run --exclude tests/integration/**",
+    "test:integration": "vitest run tests/integration/",
+    "test:precommit": "npm run test:policy && npm run test:unit",
+    "test:prepush": "npm run test:policy && npm run test:contract",
+    "test:ci": "npm run test:policy && npm run test:run",
+    "hooks:install": "git config core.hooksPath .githooks",
     "lint": "eslint src --ext .ts",
     "clean": "rm -rf dist",
+    "prepare": "npm run hooks:install",
     "prepublishOnly": "npm run build"
   },
   "keywords": [

@@ -46,7 +46,24 @@ jobs:
           python3 foundation/management/scripts/check_host_parity.py \
             --host node-server --strict --verbose
 
+  policy:
+    # Tier 0 — Test-policy guard.
+    # Blocks skipped tests (unless carrying `// policy-allow-skip:` justification),
+    # placeholder markers, empty test bodies, no-op assertions, and any bridge
+    # module in src/bridge/ that no test file imports.
+    # See system-documents/test-strategy.md.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Run test-policy guard
+        run: node scripts/check-test-policy.mjs
+
   test:
+    needs: [policy]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -60,11 +77,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run tests
+      - name: Run tests (Tier 1 + Tier 2)
         run: npm run test:run
 
   publish:
-    needs: [test, parity]
+    needs: [test, parity, policy]
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-latest
     steps:

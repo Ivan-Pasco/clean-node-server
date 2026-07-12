@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+#
+# pre-push — Tier 0 + Tier 1 + Tier 2 gate.
+#
+# Runs the policy guard and the full contract-tier suite (mocked bridges,
+# regression tests, ABI checks). Target: <30s wall clock.
+#
+# Tier 3 (integration) runs only in CI — see .github/workflows/publish.yml.
+#
+# Skip with:  git push --no-verify
+# (Do this only when the failure is unrelated to what's being pushed.)
+
+set -e
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+echo "▶ pre-push: test-policy guard"
+node scripts/check-test-policy.mjs
+
+echo "▶ pre-push: Tier 1 + Tier 2 (contract) suite"
+npm run --silent test:contract
+
+echo "✓ pre-push: OK"

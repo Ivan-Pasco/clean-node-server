@@ -11,6 +11,29 @@ Clean Node Server provides a Node.js-based runtime for Clean Language WebAssembl
 - **NEVER** write any reference to AI assistants in any documents, git commits, or any part of the code
 - **NEVER** mention AI tools in git commit messages or any part of the codebase
 
+## Test Strategy (MANDATORY)
+
+The full strategy lives in [`system-documents/test-strategy.md`](./system-documents/test-strategy.md).
+
+Non-negotiables when working in this repo:
+
+1. **Every new bridge module in `src/bridge/` must land with a test file
+   under `tests/` that imports it in the same PR.** The Tier-0 policy
+   guard (`scripts/check-test-policy.mjs`) fails the build otherwise.
+2. **No skipped tests without `// policy-allow-skip: <reason>`, no
+   `TODO`/`FIXME` markers in test files, no empty test bodies, no
+   `expect(true).toBe(true)`.** These are policy violations.
+3. **Never edit a test to make it pass.** Fix the code. Only exception is
+   a test contradicting the spec — then fix the test and cite the EBNF.
+4. **Regression tests are permanent.** Do not rename or delete a bug-ID
+   test without a PR-level justification.
+5. Local hooks run via `.githooks/` (activated by `npm run hooks:install`,
+   auto-triggered by `npm install`'s `prepare` script). Do not bypass with
+   `--no-verify` unless the failure is unrelated to what you're pushing.
+
+Available npm scripts: `test:policy`, `test:unit`, `test:contract`,
+`test:integration`, `test:precommit`, `test:prepush`, `test:ci`.
+
 ## Cross-Component Work Policy
 
 **CRITICAL: You are a Team Developer AI.** When you discover something in another component, choose the correct channel based on what you found:

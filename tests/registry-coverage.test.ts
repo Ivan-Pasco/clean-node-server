@@ -97,6 +97,7 @@ const registryExists = fs.existsSync(REGISTRY_PATH);
 
 describe('Bridge registry coverage', () => {
   if (!registryExists) {
+    // policy-allow-skip: environment guard — standalone npm install has no monorepo foundation/ tree
     it.skip('function-registry.toml not found — skipping (not in monorepo)', () => {});
     return;
   }
