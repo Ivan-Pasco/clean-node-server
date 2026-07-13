@@ -1,0 +1,152 @@
+# .github/workflows/reporter-artifacts.yml
+#
+# Runs every open "reporter-artifact" issue's replay tarball against the
+# release candidate. Release fails if any tarball is red.
+#
+# This is the load-bearing step in the closed-loop bug workflow: it makes
+# it physically impossible to ship a "resolved" release while a reporter's
+# actual failing artifact is still failing.
+#
+# Trigger design:
+#   - On workflow_dispatch: manual re-run (initial rollout).
+#   - On push to v* tag: release-gate (enabled after first green run).
+
+name: reporter-artifacts
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'node-server version to test (defaults to this checkout)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  replay-reporter-artifacts:
+    runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: cln_repro
+          MYSQL_DATABASE: cln_repro_replay
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -u root -pcln_repro"
+          --health-interval=5s
+          --health-timeout=3s
+          --health-retries=15
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install node + mysql-client
+        run: |
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs mysql-client
+
+      - name: install cln + this node-server build
+        run: |
+          # (1) cln — needed to compile any bundled .cln sources in reporter tarballs
+          curl -fsSL "https://github.com/Ivan-Pasco/clean-language-compiler/releases/latest/download/cln-linux-x86_64.tar.gz" \
+            | sudo tar xz -C /usr/local/bin/
+          sudo chmod +x /usr/local/bin/cln
+          cln --version
+
+          # (2) this node-server build — package + install globally
+          # This is what actually gets tested. Tarballs invoke `clean-node-server`
+          # via PATH; that binary must be THIS checkout's build.
+          npm ci
+          npm run build
+          sudo npm install -g .
+          clean-node-server --version
+
+      - name: install cln-repro tool
+        run: |
+          sudo mkdir -p /usr/local/lib/cln-repro/lib /usr/local/lib/cln-repro/spec
+          BASE="https://raw.githubusercontent.com/Ivan-Pasco/cln-repro/main"
+          for f in cln-repro; do
+            sudo curl -fsSL "$BASE/$f" -o "/usr/local/lib/cln-repro/$f"
+          done
+          for f in lib/capture.sh lib/capture-compile.sh lib/run.sh; do
+            sudo curl -fsSL "$BASE/$f" -o "/usr/local/lib/cln-repro/$f"
+          done
+          sudo curl -fsSL "$BASE/spec/manifest.schema.json" -o /usr/local/lib/cln-repro/spec/manifest.schema.json
+          sudo chmod +x /usr/local/lib/cln-repro/cln-repro /usr/local/lib/cln-repro/lib/*.sh
+          sudo ln -sf /usr/local/lib/cln-repro/cln-repro /usr/local/bin/cln-repro
+          cln-repro 2>&1 | head -3 || true
+
+      - name: fetch open reporter-artifact issues
+        id: issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue list \
+            --state open \
+            --label reporter-artifact \
+            --limit 100 \
+            --json url \
+            -q '.[].url' > /tmp/issue_urls.txt
+          echo "found_count=$(wc -l < /tmp/issue_urls.txt)" >> "$GITHUB_OUTPUT"
+
+      - name: replay each tarball
+        env:
+          CLN_REPRO_DB_URL: mysql://root:cln_repro@127.0.0.1:3306/cln_repro_replay
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FAILURES=0
+          TOTAL=0
+          RESULTS_FILE=/tmp/replay_results.md
+          echo "# Replay results — clean-node-server $(clean-node-server --version 2>/dev/null || echo unknown)" > "$RESULTS_FILE"
+          echo "" >> "$RESULTS_FILE"
+          echo "| Issue | Fingerprint | Result |" >> "$RESULTS_FILE"
+          echo "|-------|-------------|--------|" >> "$RESULTS_FILE"
+
+          while IFS= read -r ISSUE_URL; do
+            [[ -z "$ISSUE_URL" ]] && continue
+            TOTAL=$((TOTAL+1))
+            echo ""
+            echo "═══ REPLAY: $ISSUE_URL ═══"
+            set +e
+            cln-repro run "$ISSUE_URL" > "/tmp/replay-$TOTAL.log" 2>&1
+            RC=$?
+            set -e
+            FP=$(grep -oE 'fingerprint=[a-f0-9]+' "/tmp/replay-$TOTAL.log" | head -1 | cut -d= -f2)
+            if [[ $RC -eq 0 ]]; then
+              echo "| $ISSUE_URL | ${FP:0:12} | PASS |" >> "$RESULTS_FILE"
+              echo "PASS: $ISSUE_URL"
+              gh issue comment "$ISSUE_URL" --body "✅ **Passed** on clean-node-server $(clean-node-server --version 2>/dev/null || echo unknown) — this fix appears to resolve the reported artifact. Auto-closing in 24h if no objection." || true
+            else
+              FAILURES=$((FAILURES+1))
+              echo "| $ISSUE_URL | ${FP:0:12} | FAIL |" >> "$RESULTS_FILE"
+              echo "FAIL: $ISSUE_URL (exit=$RC)"
+              tail -30 "/tmp/replay-$TOTAL.log"
+              gh issue comment "$ISSUE_URL" --body "❌ **Still failing** on clean-node-server $(clean-node-server --version 2>/dev/null || echo unknown). Replay log excerpt:
+              \`\`\`
+              $(tail -30 /tmp/replay-$TOTAL.log)
+              \`\`\`" || true
+            fi
+          done < /tmp/issue_urls.txt
+
+          echo "" >> "$RESULTS_FILE"
+          echo "**Total: $TOTAL, Failures: $FAILURES**" >> "$RESULTS_FILE"
+          cat "$RESULTS_FILE"
+
+          if [[ $FAILURES -gt 0 ]]; then
+            echo ""
+            echo "Release blocked: $FAILURES reporter artifact(s) still fail."
+            exit 1
+          fi
+
+      - name: summary
+        if: always()
+        run: |
+          if [[ -f /tmp/replay_results.md ]]; then
+            cat /tmp/replay_results.md >> "$GITHUB_STEP_SUMMARY"
+          fi
