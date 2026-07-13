@@ -8,12 +8,14 @@
 # actual failing artifact is still failing.
 #
 # Trigger design:
-#   - On workflow_dispatch: manual re-run (initial rollout).
-#   - On push to v* tag: release-gate (enabled after first green run).
+#   - On push to v* tag: release-gate (blocks releases whose artifacts still fail).
+#   - On workflow_dispatch: manual re-run.
 
 name: reporter-artifacts
 
 on:
+  push:
+    tags: ['v*']
   workflow_dispatch:
     inputs:
       target_version:
