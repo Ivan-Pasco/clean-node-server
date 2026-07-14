@@ -12,6 +12,7 @@ import { createDatabaseBridge } from './database';
 import { createHttpClientBridge } from './http-client';
 import { createFileBridge } from './file';
 import { createFsWriteBytesBridge } from './fs-write-bytes';
+import { createCryptoSha256BytesBridge } from './crypto-sha256-bytes';
 import { createEnvBridge } from './env';
 import { createTimeBridge } from './time';
 import { createMemoryRuntimeBridge } from './memory-runtime';
@@ -77,6 +78,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const httpClientBridge = createHttpClientBridge(getState);
   const fileBridge = createFileBridge(getState);
   const fsWriteBytesBridge = createFsWriteBytesBridge(getState);
+  const cryptoSha256BytesBridge = createCryptoSha256BytesBridge(getState);
   const envBridge = createEnvBridge(getState);
   const timeBridge = createTimeBridge(getState);
   const memoryRuntimeBridge = createMemoryRuntimeBridge(getState);
@@ -418,6 +420,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       file_read: fileBridge.file_read,
       file_write: fileBridge.file_write,
       _fs_write_bytes: fsWriteBytesBridge._fs_write_bytes,
+      _crypto_sha256_bytes: cryptoSha256BytesBridge._crypto_sha256_bytes,
       file_exists: fileBridge.file_exists,
       file_delete: fileBridge.file_delete,
       file_append: fileBridge.file_append,
