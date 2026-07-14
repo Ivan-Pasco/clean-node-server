@@ -134,6 +134,12 @@ export class CleanNodeServer {
     this.app.use(express.urlencoded({ extended: true, limit: '10mb' }));
     this.app.use(cookieParser());
     this.app.use(express.text({ type: 'text/*', limit: '10mb' }));
+    // Buffer binary bodies as a raw Buffer so _req_body_bytes can hand Clean
+    // handlers the exact wire bytes. Without this, application/octet-stream
+    // requests reach the WASM layer as an empty body, or (worse, with a
+    // permissive text parser) as a UTF-8-decoded string that corrupts any
+    // non-ASCII bytes. Limit matches the errors-dashboard tarball ceiling.
+    this.app.use(express.raw({ type: 'application/octet-stream', limit: '200mb' }));
 
     // Security headers.
     this.app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -417,13 +423,15 @@ export class CleanNodeServer {
       }
     }
 
+    const { body, bodyBytes } = this.getRequestBody(req);
     const context: RequestContext = {
       method: req.method,
       path,
       params,
       query,
       headers: this.normalizeHeaders(req.headers),
-      body: this.getRequestBody(req),
+      body,
+      bodyBytes,
       cookies: req.cookies || {},
       sessionId: req.cookies?.session_id,
     };
@@ -632,10 +640,19 @@ export class CleanNodeServer {
     return out;
   }
 
-  private getRequestBody(req: Request): string {
-    if (typeof req.body === 'string') return req.body;
-    if (req.body && typeof req.body === 'object') return JSON.stringify(req.body);
-    return '';
+  private getRequestBody(req: Request): { body: string; bodyBytes?: Uint8Array } {
+    // Binary bodies (via express.raw) arrive as a Node Buffer. Preserve the
+    // raw octets on bodyBytes so `_req_body_bytes` can hand them to Clean
+    // handlers untouched — the string form is a best-effort latin1 view kept
+    // only so `_req_body` returns something non-empty for legacy callers.
+    if (Buffer.isBuffer(req.body)) {
+      const buf = req.body;
+      const bodyBytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+      return { body: buf.toString('latin1'), bodyBytes };
+    }
+    if (typeof req.body === 'string') return { body: req.body };
+    if (req.body && typeof req.body === 'object') return { body: JSON.stringify(req.body) };
+    return { body: '' };
   }
 
   start(port?: number): Promise<void> {

@@ -3,6 +3,7 @@ import {
   readRawString,
   readLengthPrefixedString,
   writeLengthPrefixedString,
+  writeLengthPrefixedBytes,
   bumpHeapPtr,
 } from '../wasm/memory';
 
@@ -43,6 +44,15 @@ export function readPrefixedString(state: WasmState, ptr: number): string {
  */
 export function writeString(state: WasmState, str: string): number {
   return writeLengthPrefixedString(state.exports, str);
+}
+
+/**
+ * Helper to write a raw byte sequence to WASM memory in the length-prefixed
+ * layout Clean code uses for strings. The bytes are stored verbatim — no
+ * UTF-8 encoding step — so binary payloads survive the round-trip intact.
+ */
+export function writeBytes(state: WasmState, data: Uint8Array): number {
+  return writeLengthPrefixedBytes(state.exports, data);
 }
 
 /**

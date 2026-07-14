@@ -23,6 +23,20 @@ export interface RequestContext {
   query: Record<string, string>;
   headers: Record<string, string>;
   body: string;
+  /**
+   * Raw request body bytes, preserved verbatim from the wire.
+   *
+   * Populated when the body could not be losslessly represented as `body:
+   * string` — the primary case is `application/octet-stream` (via
+   * `express.raw`), where the string form would UTF-8-decode the bytes and
+   * corrupt any non-textual content. Absent for JSON / form-encoded / text
+   * bodies where `body` is already the source of truth.
+   *
+   * When present, `bodyBytes.length === Number(headers['content-length'])`
+   * whenever Content-Length is set. The `_req_body_bytes` bridge exposes
+   * this to Clean code as `req.body_bytes()`.
+   */
+  bodyBytes?: Uint8Array;
   cookies: Record<string, string>;
   sessionId?: string;
 }

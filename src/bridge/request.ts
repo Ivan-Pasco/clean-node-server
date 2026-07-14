@@ -1,5 +1,5 @@
 import { WasmState } from '../types';
-import { readString, writeString } from './helpers';
+import { readString, writeString, writeBytes } from './helpers';
 import { getRequestContext } from '../wasm/state';
 
 /**
@@ -72,6 +72,32 @@ export function createRequestBridge(getState: () => WasmState) {
       const state = getState();
       const ctx = getRequestContext(state);
       return writeString(state, ctx.body);
+    },
+
+    /**
+     * Get the raw request body as an opaque byte sequence.
+     *
+     * Returns the pointer to a length-prefixed byte buffer laid out exactly
+     * like a length-prefixed string (`[4-byte LE length][bytes]`). No UTF-8
+     * decoding is performed, so binary payloads (tarballs, images, arbitrary
+     * octets) are preserved verbatim — the caller can compute a hash over
+     * the exact wire bytes, write them to disk, or forward them untouched.
+     *
+     * When `Content-Length` is set on the request, the returned length is
+     * guaranteed to equal it. Empty bodies return a pointer to a zero-length
+     * buffer, not 0.
+     *
+     * Backed by ctx.bodyBytes when the server buffered raw bytes (see
+     * `express.raw` middleware for `application/octet-stream`). Falls back
+     * to the UTF-8 encoding of `ctx.body` for content-types the raw parser
+     * did not intercept — in that path the bytes are already textual, so
+     * the encoding is exact.
+     */
+    _req_body_bytes(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const bytes = ctx.bodyBytes ?? new TextEncoder().encode(ctx.body);
+      return writeBytes(state, bytes);
     },
 
     /**

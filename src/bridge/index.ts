@@ -11,6 +11,7 @@ import { createCryptoBridge } from './crypto';
 import { createDatabaseBridge } from './database';
 import { createHttpClientBridge } from './http-client';
 import { createFileBridge } from './file';
+import { createFsWriteBytesBridge } from './fs-write-bytes';
 import { createEnvBridge } from './env';
 import { createTimeBridge } from './time';
 import { createMemoryRuntimeBridge } from './memory-runtime';
@@ -75,6 +76,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
   const databaseBridge = createDatabaseBridge(getState);
   const httpClientBridge = createHttpClientBridge(getState);
   const fileBridge = createFileBridge(getState);
+  const fsWriteBytesBridge = createFsWriteBytesBridge(getState);
   const envBridge = createEnvBridge(getState);
   const timeBridge = createTimeBridge(getState);
   const memoryRuntimeBridge = createMemoryRuntimeBridge(getState);
@@ -394,6 +396,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _req_param_int: requestBridge._req_param_int,
       _req_query: requestBridge._req_query,
       _req_body: requestBridge._req_body,
+      _req_body_bytes: requestBridge._req_body_bytes,
       _req_body_field: requestBridge._req_body_field,
       _req_header: requestBridge._req_header,
       _req_method: requestBridge._req_method,
@@ -414,6 +417,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       // File I/O functions
       file_read: fileBridge.file_read,
       file_write: fileBridge.file_write,
+      _fs_write_bytes: fsWriteBytesBridge._fs_write_bytes,
       file_exists: fileBridge.file_exists,
       file_delete: fileBridge.file_delete,
       file_append: fileBridge.file_append,

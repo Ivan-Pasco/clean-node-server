@@ -83,6 +83,33 @@ export function readLengthPrefixedString(memory: WebAssembly.Memory, ptr: number
 }
 
 /**
+ * Read a length-prefixed opaque byte sequence from WASM memory.
+ *
+ * Mirrors readLengthPrefixedString but returns the raw bytes (Uint8Array)
+ * without a UTF-8 decode step. Layout: `[4-byte LE length][bytes]`.
+ *
+ * The returned Uint8Array is a copy — it does NOT alias WASM memory — so the
+ * caller can hold onto it across subsequent bridge calls that may grow and
+ * detach the underlying ArrayBuffer.
+ */
+export function readLengthPrefixedBytes(memory: WebAssembly.Memory, ptr: number): Uint8Array {
+  if (ptr === 0) return new Uint8Array(0);
+
+  const buffer = memory.buffer;
+  const view = new DataView(buffer);
+  const len = view.getUint32(ptr, true);
+
+  if (len === 0) return new Uint8Array(0);
+  if (ptr + 4 + len > buffer.byteLength) {
+    throw new Error(
+      `Invalid bytes length: ${len} at ptr ${ptr} (buffer ${buffer.byteLength})`
+    );
+  }
+
+  return new Uint8Array(buffer, ptr + 4, len).slice();
+}
+
+/**
  * Read a raw string from WASM memory (ptr, len pair)
  * Used when WASM passes ptr and len as separate arguments
  *
@@ -207,6 +234,46 @@ export function writeLengthPrefixedString(exports: WasmExports, str: string): nu
   const view = new DataView(buffer);
   view.setUint32(ptr, bytes.length, true); // little-endian length prefix
   new Uint8Array(buffer).set(bytes, ptr + 4);
+
+  bumpHeapPtrPastAllocation(exports, ptr, totalSize);
+  return ptr;
+}
+
+/**
+ * Write a length-prefixed opaque byte sequence to WASM memory.
+ *
+ * Layout matches writeLengthPrefixedString exactly — `[4-byte LE length][bytes]` —
+ * so Clean code can treat the returned pointer with the same length-prefix
+ * convention it already uses for strings. The distinction is only in the
+ * source: this helper never runs the bytes through TextEncoder, so binary
+ * payloads (tarballs, images, arbitrary octets) are preserved verbatim.
+ *
+ * Used by `_req_body_bytes` to expose raw request bodies to Clean handlers
+ * that need to compute hashes, write to disk, or forward untouched.
+ */
+export function writeLengthPrefixedBytes(exports: WasmExports, data: Uint8Array): number {
+  const totalSize = 4 + data.length;
+
+  const ptr = exports.malloc(totalSize);
+  if (ptr === 0) {
+    const bufferMB = (exports.memory.buffer.byteLength / 1024 / 1024).toFixed(1);
+    throw new Error(
+      `WASM malloc returned null: need ${totalSize} bytes, buffer is ${bufferMB} MB. ` +
+      `Memory cap reached — either raise preGrowMemoryBytes, raise the WASM module's ` +
+      `declared maximum, or audit the program for unbounded allocations.`
+    );
+  }
+
+  const buffer = exports.memory.buffer;
+  if (ptr + totalSize > buffer.byteLength) {
+    throw new Error(
+      `WASM allocator returned out-of-bounds pointer: ptr=${ptr}, need=${totalSize}, ` +
+      `buffer=${buffer.byteLength}. The allocator is not honoring the null-on-failure contract.`
+    );
+  }
+  const view = new DataView(buffer);
+  view.setUint32(ptr, data.length, true);
+  new Uint8Array(buffer).set(data, ptr + 4);
 
   bumpHeapPtrPastAllocation(exports, ptr, totalSize);
   return ptr;
