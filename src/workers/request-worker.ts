@@ -1,6 +1,12 @@
 import { workerData, parentPort } from 'worker_threads';
 import { WasmLoader } from '../wasm/instance';
 import { createBridgeImports, resetPerRequestBridgeState } from '../bridge';
+import {
+  installLogInterceptor as installDevCaptureLogInterceptor,
+  recordRequest as devCaptureRecordRequest,
+  setCurrentWasm as devCaptureSetCurrentWasm,
+  isEnabled as devCaptureEnabled,
+} from '../bridge/dev-snapshot';
 import { BrokerSessionStore } from '../session/broker-store';
 import { createDatabaseDriver } from '../database';
 import { setSandboxRoot } from '../bridge/file';
@@ -40,12 +46,32 @@ const {
 
 setSandboxRoot(sandboxRoot);
 
+// Dev-mode capture log interceptor. Idempotent + CLEAN_DEV-gated at the
+// callsite, so this is safe to always call; in production it returns
+// immediately and console.* stays unwrapped. See dev-snapshot.ts.
+installDevCaptureLogInterceptor();
+
 let wasmState: WasmState | null = null;
 let database: DatabaseDriver | undefined;
 let httpWorkerClient: SyncHttpClient | null = null;
 let requestCount = 0;
 let initialHeapPtr = 0;
 let initialMemoryBytes = 0;
+
+/**
+ * Reconstruct the wire-format path (`/foo?a=1&b=2`) from the parsed context.
+ * Query keys/values are URL-encoded — the parser strips encoding on the way
+ * in, so we re-encode on the way out. Empty query object yields just the path.
+ * Used exclusively by the dev-mode request ring buffer.
+ */
+function buildPathAndQuery(pathOnly: string, query: Record<string, string>): string {
+  const keys = Object.keys(query);
+  if (keys.length === 0) return pathOnly;
+  const pairs = keys
+    .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(query[k]!)}`)
+    .join('&');
+  return `${pathOnly}?${pairs}`;
+}
 
 function readHeapPtr(): number {
   if (!wasmState) return 0;
@@ -90,6 +116,14 @@ async function initialize(): Promise<void> {
 
   httpWorkerClient = new SyncHttpClient();
   const loader = new WasmLoader(wasmPath);
+  // Pre-load so `getBytes()` is populated before the dev-capture bridge can
+  // be invoked from a handler. In production (CLEAN_DEV unset) `setCurrentWasm`
+  // still runs but the bytes are only surfaced when snapshotJson() gates open.
+  await loader.load();
+  const wasmBytesForCapture = loader.getBytes();
+  if (wasmBytesForCapture) {
+    devCaptureSetCurrentWasm(wasmBytesForCapture, wasmPath);
+  }
 
   let state: WasmState | null = null;
   const imports = createBridgeImports(() => {
@@ -135,6 +169,11 @@ parentPort.on('message', (msg: WorkerInbound) => {
     } satisfies WorkerErrorMsg);
     return;
   }
+
+  // Dev-mode request ring buffer timing. Read once at the top so the
+  // pre-scope path length is included; the recording call below is gated on
+  // devCaptureEnabled() so this is a no-op in production.
+  const devCaptureStartNs = devCaptureEnabled() ? process.hrtime.bigint() : 0n;
 
   // Per-request scope wraps the WASM handler invocation so the bump allocator
   // is rewound after each request. Compiler 0.30.330+ exports `scope_push`
@@ -184,6 +223,25 @@ parentPort.on('message', (msg: WorkerInbound) => {
     }
 
     const response = getResponse(wasmState);
+
+    // Dev-mode capture: record the completed request into the worker-local
+    // ring buffer. Gated on CLEAN_DEV=1 inside `recordRequest` so this is
+    // effectively free in production. Redaction of Cookie/Authorization
+    // happens at write time inside the ring buffer.
+    if (devCaptureEnabled()) {
+      const durationMs = Number(process.hrtime.bigint() - devCaptureStartNs) / 1e6;
+      const bodyBytes = context.bodyBytes ?? Buffer.from(context.body ?? '', 'utf8');
+      const contentType = context.headers['content-type'] ?? context.headers['Content-Type'];
+      devCaptureRecordRequest({
+        method: context.method,
+        pathAndQuery: buildPathAndQuery(context.path, context.query),
+        status: response.status,
+        durationMs: Math.round(durationMs),
+        headers: Object.entries(context.headers),
+        bodyBytes,
+        contentType,
+      });
+    }
 
     // Response body, headers, and cookies are already materialized as JS
     // strings/objects above; rewinding the WASM heap is safe from here on.
@@ -236,6 +294,27 @@ parentPort.on('message', (msg: WorkerInbound) => {
     // populated listStore/arrayStore with handles to lists that the throw
     // prevented from being released.
     try { resetPerRequestBridgeState(); } catch { /* defensive — never block error reporting */ }
+    // Dev-mode capture: record the failed request. Errors are reported with
+    // HTTP 500 (or 503 upstream); we record 500 here since node-server's
+    // status mapping happens in server.ts after the worker replies. The
+    // status is close enough for the retest-sandbox flow — the reproducer's
+    // interest is that a request *happened*, not its final HTTP code.
+    if (devCaptureEnabled()) {
+      try {
+        const durationMs = Number(process.hrtime.bigint() - devCaptureStartNs) / 1e6;
+        const bodyBytes = context.bodyBytes ?? Buffer.from(context.body ?? '', 'utf8');
+        const contentType = context.headers['content-type'] ?? context.headers['Content-Type'];
+        devCaptureRecordRequest({
+          method: context.method,
+          pathAndQuery: buildPathAndQuery(context.path, context.query),
+          status: 500,
+          durationMs: Math.round(durationMs),
+          headers: Object.entries(context.headers),
+          bodyBytes,
+          contentType,
+        });
+      } catch { /* never block error reporting */ }
+    }
     requestCount++;
     let heapGrown = 0;
     try { heapGrown = effectiveGrowthBytes(); } catch { /* heap unreadable post-trap */ }

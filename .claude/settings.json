@@ -21,7 +21,13 @@
       "Bash(git stash *)",
       "Bash(cleen --version)",
       "Bash(cleen list *)",
-      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=server&status=open')"
+      "Bash(curl -s -H 'X-API-Key: __TRACKED_VAR__' 'https://errors.cleanlanguage.dev/api/v1/bugs?component=server&status=open')",
+      "Bash(curl -sS -H 'Authorization: Bearer __TRACKED_VAR__' https://errors.cleanlanguage.dev/api/v1/prompts/7fb425cb-79ba-11f1-9586-da25a95a496b)",
+      "Bash(curl -sS \"https://errors.cleanlanguage.dev/api/v1/deps?kind=prompt&ref=7fb425cb-79ba-11f1-9586-da25a95a496b\")",
+      "Skill(team-prompts-list)",
+      "Skill(team-prompts-list:*)",
+      "Bash(curl -fsS -X POST -H 'Authorization: Bearer __TRACKED_VAR__' -H 'Content-Type: application/json' -d '{\"claimed_by\":\"fix-session-node-server-2026-07-12\",\"ttl_minutes\":30}' https://errors.cleanlanguage.dev/api/v1/queue/error/021b77bdf31fd10e590d9ef2c26f5728a4b7065f751905d96bf9ca28ee245dad/claim)",
+      "mcp__clean-language__list_component_bugs"
     ]
   }
 }

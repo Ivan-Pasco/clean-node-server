@@ -169,4 +169,13 @@ export class WasmLoader {
   getPath(): string {
     return this.wasmPath;
   }
+
+  /**
+   * Return the raw WASM bytes loaded by the most recent `load()` call, or
+   * null if load() has not yet been called. Used by dev-mode capture to
+   * base64 the currently-running module without re-reading it from disk.
+   */
+  getBytes(): Uint8Array | null {
+    return this.bytes;
+  }
 }
