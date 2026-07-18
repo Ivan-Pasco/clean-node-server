@@ -26,6 +26,8 @@
 //                                       [--dump-hex-output]
 //                                       [--json-output]
 //                                       [--wat-out <path>]
+//                                       [--probe-heap]
+//                                       [--probe-fn <exportName>]  (repeatable)
 //
 // Exit codes:
 //   0 — handler returned, response body captured
@@ -67,7 +69,7 @@ const { InMemorySessionStore } = sessionStoreModule;
 fileBridgeModule.setSandboxRoot('/tmp');
 
 function parseArgs(argv) {
-  const args = { headers: {} };
+  const args = { headers: {}, probeFns: [] };
   let i = 0;
   while (i < argv.length) {
     const a = argv[i];
@@ -89,6 +91,8 @@ function parseArgs(argv) {
       case '--dump-hex-output': args.dumpHexOutput = true; break;
       case '--json-output': args.jsonOutput = true; break;
       case '--wat-out': args.watOut = argv[++i]; break;
+      case '--probe-heap': args.probeHeap = true; break;
+      case '--probe-fn': args.probeFns.push(argv[++i]); break;
       case '--help': case '-h': args.help = true; break;
       default: console.error(`unknown arg: ${a}`); process.exit(2);
     }
@@ -103,9 +107,18 @@ function usage() {
   [--query key=val,key=val] [--header 'Name: Value'] [--body '...']
   [--dump-memory <byteOffset>[:<len>]] [--dump-hex-output] [--json-output]
   [--wat-out <path>]
+  [--probe-heap] [--probe-fn <exportName>]
 
 Stdout: raw response body bytes.
-Stderr: forensic context (status, headers, byte counts, hex dumps).`);
+Stderr: forensic context (status, headers, byte counts, hex dumps).
+
+Probe mode (--probe-heap):
+  Wraps every string_builder_* export and any --probe-fn to log __heap_ptr
+  on entry and return. Flags backward movements of __heap_ptr within a
+  handler invocation (rewind hazard). After the final builder finalize,
+  snapshots the LP-string content bytes and re-checks them after any
+  subsequent import (bridge) call, so mutation attributions to a specific
+  bridge become visible in the log.`);
 }
 
 function parseKV(s) {
@@ -161,9 +174,93 @@ async function main() {
     return state;
   });
 
+  // Probe state — shared with the wrappers below. Populated after instantiate.
+  const probe = {
+    active: false,
+    heapPtrGlobal: null,      // WebAssembly.Global for __heap_ptr
+    memory: null,              // WebAssembly.Memory
+    lastHeapPtr: 0,            // running max seen inside current invocation
+    invocationDepth: 0,        // >0 while inside a probed export/import
+    finalizedContentPtr: 0,    // ptr returned by most recent string_builder_finalize
+    finalizedContentLen: 0,
+    finalizedSnapshot: null,   // Uint8Array copy of content at time of finalize
+    events: [],                // ordered log
+  };
+
+  const heap = () => (probe.heapPtrGlobal ? probe.heapPtrGlobal.value >>> 0 : 0);
+
+  const logEvent = (msg) => {
+    if (!probe.active) return;
+    probe.events.push(msg);
+    console.error(`[probe] ${msg}`);
+  };
+
+  const checkRewind = (label) => {
+    if (!probe.active) return;
+    const cur = heap();
+    if (cur < probe.lastHeapPtr) {
+      logEvent(`REWIND __heap_ptr ${probe.lastHeapPtr} -> ${cur} at ${label} (Δ=${cur - probe.lastHeapPtr})`);
+    }
+    if (cur > probe.lastHeapPtr) probe.lastHeapPtr = cur;
+  };
+
+  const snapshotContent = () => {
+    if (!probe.active || !probe.finalizedContentPtr) return null;
+    const buf = probe.memory.buffer;
+    const start = probe.finalizedContentPtr;
+    const len = probe.finalizedContentLen;
+    if (start + len > buf.byteLength) return null;
+    return new Uint8Array(buf.slice(start, start + len));
+  };
+
+  const compareSnapshot = (label) => {
+    if (!probe.active || !probe.finalizedSnapshot) return;
+    const now = snapshotContent();
+    if (!now || now.length !== probe.finalizedSnapshot.length) {
+      logEvent(`MUTATION finalized-content length changed after ${label} (was=${probe.finalizedSnapshot?.length} now=${now?.length})`);
+      probe.finalizedSnapshot = now;
+      return;
+    }
+    for (let i = 0; i < now.length; i++) {
+      if (now[i] !== probe.finalizedSnapshot[i]) {
+        logEvent(`MUTATION finalized-content bytes changed after ${label} at offset ${i} (was=0x${probe.finalizedSnapshot[i].toString(16)} now=0x${now[i].toString(16)})`);
+        probe.finalizedSnapshot = now;
+        return;
+      }
+    }
+  };
+
+  // Wrap bridge imports so calls that happen AFTER a finalize get
+  // checked for content mutation. We only wrap functions.
+  const wrapImports = (importObject) => {
+    if (!args.probeHeap) return importObject;
+    const wrapped = {};
+    for (const [mod, funcs] of Object.entries(importObject)) {
+      wrapped[mod] = {};
+      for (const [name, fn] of Object.entries(funcs)) {
+        if (typeof fn !== 'function') { wrapped[mod][name] = fn; continue; }
+        wrapped[mod][name] = (...a) => {
+          const enteredAtDepth = probe.invocationDepth;
+          probe.invocationDepth++;
+          try {
+            const r = fn(...a);
+            checkRewind(`import ${mod}.${name}`);
+            // Only compare when the bridge call returns to top-level
+            // export scope (avoids O(N²) noise from nested calls).
+            if (enteredAtDepth === 0) compareSnapshot(`${mod}.${name}`);
+            return r;
+          } finally {
+            probe.invocationDepth--;
+          }
+        };
+      }
+    }
+    return wrapped;
+  };
+
   let instance;
   try {
-    instance = await WebAssembly.instantiate(module, imports);
+    instance = await WebAssembly.instantiate(module, wrapImports(imports));
   } catch (err) {
     console.error(`[repro] instantiate failed: ${err && err.message ? err.message : err}`);
     if (err && err.stack) console.error(err.stack);
@@ -174,6 +271,58 @@ async function main() {
 
   // Run module init (mirrors what request-worker.ts does).
   const exports = state.exports;
+
+  // Activate the heap probe now that memory + heap-ptr are visible.
+  if (args.probeHeap) {
+    const heapGlobal = exports.__heap_ptr;
+    if (!heapGlobal || typeof heapGlobal.value !== 'number') {
+      console.error('[repro] --probe-heap: module does not export __heap_ptr; cannot instrument');
+      process.exit(2);
+    }
+    probe.active = true;
+    probe.heapPtrGlobal = heapGlobal;
+    probe.memory = exports.memory;
+    probe.lastHeapPtr = heap();
+    console.error(`[probe] active. initial __heap_ptr=${probe.lastHeapPtr}`);
+
+    // Wrap probeable exports in-place so subsequent code (module init AND
+    // handler) sees the wrappers. Targets: every string_builder_* export
+    // plus every --probe-fn the user asked for.
+    const probeNames = new Set(args.probeFns);
+    for (const name of Object.keys(exports)) {
+      if (name.startsWith('string_builder_') || probeNames.has(name)) {
+        const original = exports[name];
+        if (typeof original !== 'function') continue;
+        const isFinalize = name === 'string_builder_finalize';
+        const wrapper = (...a) => {
+          const before = heap();
+          probe.invocationDepth++;
+          const r = original(...a);
+          const after = heap();
+          probe.invocationDepth--;
+          const delta = after - before;
+          logEvent(`${name}(${a.join(',')}) -> ${r}  __heap_ptr ${before}→${after} Δ=${delta >= 0 ? '+' : ''}${delta}`);
+          if (after < before) {
+            logEvent(`REWIND inside ${name}: __heap_ptr ${before} -> ${after}`);
+          }
+          if (after > probe.lastHeapPtr) probe.lastHeapPtr = after;
+          if (isFinalize && typeof r === 'number' && r > 0) {
+            const view = new DataView(probe.memory.buffer);
+            if (r + 4 <= probe.memory.buffer.byteLength) {
+              const len = view.getUint32(r, true);
+              probe.finalizedContentPtr = r + 4;
+              probe.finalizedContentLen = len;
+              probe.finalizedSnapshot = snapshotContent();
+              logEvent(`finalize captured content_ptr=${probe.finalizedContentPtr} len=${probe.finalizedContentLen}`);
+            }
+          }
+          return r;
+        };
+        Object.defineProperty(exports, name, { value: wrapper, writable: true, configurable: true });
+      }
+    }
+  }
+
   try {
     if (typeof exports.start === 'function') exports.start();
     else if (typeof exports._start === 'function') exports._start();
@@ -207,12 +356,22 @@ async function main() {
   const hasScopes = typeof scopePush === 'function' && typeof scopePop === 'function';
   const snapshot = hasScopes ? scopePush() : 0;
 
+  if (probe.active) {
+    probe.lastHeapPtr = heap();
+    logEvent(`--- handler ${args.handler} enter, __heap_ptr=${probe.lastHeapPtr} ---`);
+  }
+
   let resultPtr = 0;
   let handlerErr = null;
   try {
     resultPtr = handler();
   } catch (err) {
     handlerErr = err;
+  }
+
+  if (probe.active) {
+    logEvent(`--- handler ${args.handler} exit,  __heap_ptr=${heap()} resultPtr=${resultPtr} ---`);
+    compareSnapshot(`handler ${args.handler} return`);
   }
 
   // Read response bytes BEFORE any scope_pop (rewind detaches the address).
