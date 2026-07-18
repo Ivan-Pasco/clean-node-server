@@ -401,6 +401,7 @@ export function createBridgeImports(getState: () => WasmState): WasmImports {
       _req_query: requestBridge._req_query,
       _req_body: requestBridge._req_body,
       _req_body_bytes: requestBridge._req_body_bytes,
+      _req_body_sha256_hex: requestBridge._req_body_sha256_hex,
       _req_body_field: requestBridge._req_body_field,
       _req_header: requestBridge._req_header,
       _req_method: requestBridge._req_method,

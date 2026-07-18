@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { WasmState } from '../types';
 import { readString, writeString, writeBytes } from './helpers';
 import { getRequestContext } from '../wasm/state';
@@ -98,6 +99,23 @@ export function createRequestBridge(getState: () => WasmState) {
       const ctx = getRequestContext(state);
       const bytes = ctx.bodyBytes ?? new TextEncoder().encode(ctx.body);
       return writeBytes(state, bytes);
+    },
+
+    /**
+     * Server-computed SHA-256 (lowercase hex) of the raw request body,
+     * hashed over the pre-parse bytes so callers can compare against a
+     * client-supplied X-Tarball-SHA256 (or similar) without needing to
+     * materialize the body inside WASM linear memory.
+     *
+     * Same byte source as _req_body_bytes: ctx.bodyBytes when the raw
+     * middleware buffered them, else the UTF-8 encoding of ctx.body.
+     */
+    _req_body_sha256_hex(): number {
+      const state = getState();
+      const ctx = getRequestContext(state);
+      const bytes = ctx.bodyBytes ?? new TextEncoder().encode(ctx.body);
+      const hex = createHash('sha256').update(bytes).digest('hex');
+      return writeString(state, hex);
     },
 
     /**
